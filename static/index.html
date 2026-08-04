@@ -220,8 +220,16 @@ const KEYS = [
   ["backspace","⌫"],["pgup","PgUp"],["pgdn","PgDn"],
 ];
 
+const CHUNK = 400;        // lines per "Load earlier" request
+const MAX_GAP = 5000;     // bigger gaps aren't worth stitching back together
+const MAX_HISTORY = 20000;// keep the DOM from growing without bound
+
 let ws = null, currentId = null, currentTitle = "";
-let olderLines = [], olderStart = null, liveStart = 0, liveLines = [], fontSize = 12;
+/* `hist` holds the lines we currently display; `histStart` is the iTerm2
+   line number of hist[0], and `firstLine` the oldest line iTerm2 still has. */
+let hist = [], histStart = 0, firstLine = 0, totalLines = 0;
+let pendingFrame = null, applying = false, loading = false;
+let fontSize = +(localStorage.getItem("fontSize") || 12);
 let listTimer = null;
 
 /* ---------------- session list ---------------- */
@@ -284,7 +292,7 @@ function render(windows) {
 /* ---------------- terminal view ---------------- */
 function openSession(id, title) {
   currentId = id; currentTitle = title;
-  olderLines = []; olderStart = null; liveLines = [];
+  hist = []; histStart = 0; firstLine = 0; totalLines = 0; pendingFrame = null;
   $("term-title").textContent = title;
   $("screen").textContent = "";
   $("status").textContent = "connecting…";
@@ -299,20 +307,20 @@ function closeSession() {
   $("term-view").style.display = "none";
   $("list-view").style.display = "block";
   refreshList();
+  clearInterval(listTimer);
   listTimer = setInterval(refreshList, 5000);
 }
 function connect() {
   if (!currentId) return;
+  if (ws) { ws.onclose = null; ws.close(); ws = null; }
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/api/ws`);
   ws.onopen = () => ws.send(JSON.stringify({type: "watch", session_id: currentId}));
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
     if (m.type === "screen") {
-      liveStart = m.start;
-      liveLines = m.lines;
-      updateScreen();
-      $("status").textContent = `${currentTitle} · ${m.total} lines`;
+      pendingFrame = m;
+      drain();
     } else if (m.type === "gone") {
       $("status").textContent = "session closed";
     } else if (m.type === "error") {
@@ -325,26 +333,87 @@ function connect() {
     setTimeout(connect, 1500);
   };
 }
+/* Frames arrive faster than a gap-fill fetch completes, so apply them one at
+   a time and only ever keep the newest one waiting. */
+function drain() {
+  if (applying) return;
+  applying = true;
+  (async () => {
+    try {
+      while (pendingFrame) {
+        const m = pendingFrame;
+        pendingFrame = null;
+        await applyFrame(m);
+      }
+    } finally { applying = false; }
+  })();
+}
+async function applyFrame(m) {
+  firstLine = m.first || 0;
+  totalLines = m.total;
+  const histEnd = histStart + hist.length;
+  if (hist.length && m.start > histEnd) {
+    // Output scrolled past the tail window since the last frame; fetch what
+    // we missed so the scrollback stays continuous.
+    const gap = m.start - histEnd;
+    const filled = gap <= MAX_GAP ? await fetchRange(histEnd, gap) : null;
+    if (filled && filled.start === histEnd && filled.lines.length === gap) {
+      hist = hist.concat(filled.lines);
+    } else {
+      hist = [];   // can't stitch — fall back to showing just the live tail
+    }
+  }
+  if (!hist.length || m.start < histStart) {
+    hist = m.lines.slice();
+    histStart = m.start;
+  } else {
+    hist.length = m.start - histStart;
+    hist = hist.concat(m.lines);
+  }
+  if (hist.length > MAX_HISTORY) {
+    histStart += hist.length - MAX_HISTORY;
+    hist = hist.slice(-MAX_HISTORY);
+  }
+  updateScreen();
+  $("status").textContent = `${currentTitle} · ${totalLines} lines`;
+}
+async function fetchRange(start, count) {
+  if (!currentId || count <= 0) return null;
+  try {
+    const r = await fetch("/api/scrollback?session_id=" +
+      encodeURIComponent(currentId) + `&start=${start}&count=${count}`);
+    return r.ok ? await r.json() : null;
+  } catch (e) {
+    return null;
+  }
+}
 function updateScreen() {
   const wrap = $("screen-wrap");
   const pinned = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 60;
-  const older = olderLines.length ? olderLines.join("\n") + "\n" : "";
-  $("screen").textContent = older + liveLines.join("\n");
+  $("screen").textContent = hist.join("\n");
+  $("load-earlier").style.display = histStart > firstLine ? "block" : "none";
   if (pinned) wrap.scrollTop = wrap.scrollHeight;
 }
 async function loadEarlier() {
-  const boundary = olderStart === null ? liveStart : olderStart;
-  if (boundary <= 0 || !currentId) return;
-  const count = Math.min(400, boundary);
-  const start = boundary - count;
-  const r = await fetch(`/api/scrollback?session_id=${encodeURIComponent(currentId)}&start=${start}&count=${count}`);
-  if (!r.ok) return;
-  const data = await r.json();
-  const wrap = $("screen-wrap"), before = wrap.scrollHeight;
-  olderLines = data.lines.concat(olderLines);
-  olderStart = start;
-  updateScreen();
-  wrap.scrollTop += wrap.scrollHeight - before;
+  if (loading || !currentId || histStart <= firstLine) return;
+  loading = true;
+  $("load-earlier").textContent = "Loading…";
+  try {
+    const count = Math.min(CHUNK, histStart - firstLine);
+    const data = await fetchRange(histStart - count, count);
+    if (data && data.lines.length &&
+        data.start + data.lines.length === histStart) {
+      const wrap = $("screen-wrap"), before = wrap.scrollHeight;
+      hist = data.lines.concat(hist);
+      histStart = data.start;
+      firstLine = data.first || 0;
+      updateScreen();
+      wrap.scrollTop += wrap.scrollHeight - before;   // keep the view in place
+    }
+  } finally {
+    loading = false;
+    $("load-earlier").textContent = "Load earlier";
+  }
 }
 function sendInput() {
   const box = $("input");
@@ -363,14 +432,35 @@ $("input").addEventListener("keydown", e => {
   if (e.key === "Enter") { e.preventDefault(); sendInput(); }
 });
 $("load-earlier").onclick = loadEarlier;
-$("font-minus").onclick = () => { fontSize = Math.max(8, fontSize - 1); $("screen").style.fontSize = fontSize + "px"; };
-$("font-plus").onclick = () => { fontSize = Math.min(20, fontSize + 1); $("screen").style.fontSize = fontSize + "px"; };
-$("wrap-toggle").onclick = () => $("screen").classList.toggle("wrap");
+function setFont(size) {
+  fontSize = Math.min(20, Math.max(8, size));
+  $("screen").style.fontSize = fontSize + "px";
+  localStorage.setItem("fontSize", fontSize);
+}
+$("font-minus").onclick = () => setFont(fontSize - 1);
+$("font-plus").onclick = () => setFont(fontSize + 1);
+function setWrap(on) {
+  $("screen").classList.toggle("wrap", on);
+  localStorage.setItem("wrap", on ? "1" : "");
+}
+$("wrap-toggle").onclick = () => setWrap(!$("screen").classList.contains("wrap"));
+setFont(fontSize);
+setWrap(!!localStorage.getItem("wrap"));
 KEYS.forEach(([name, label]) => {
   const b = document.createElement("button");
   b.textContent = label;
   b.onclick = () => sendKey(name);
   $("keys").appendChild(b);
+});
+
+/* Phones freeze the page (and the websocket) when it goes to the background. */
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  if (currentId) {
+    if (!ws || ws.readyState > WebSocket.OPEN) connect();
+  } else {
+    refreshList();
+  }
 });
 
 refreshList();

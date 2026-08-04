@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- Template: install-agent.sh replaces __TERMDECK_DIR__ with the repo path. -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -6,9 +7,11 @@
   <string>com.carlitos.termdeck</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/carlitoswillis/workspace/termdeck/.venv/bin/python</string>
-    <string>/Users/carlitoswillis/workspace/termdeck/server.py</string>
+    <string>__TERMDECK_DIR__/.venv/bin/python</string>
+    <string>__TERMDECK_DIR__/server.py</string>
   </array>
+  <key>WorkingDirectory</key>
+  <string>__TERMDECK_DIR__</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -16,13 +19,13 @@
   <key>ThrottleInterval</key>
   <integer>10</integer>
   <key>StandardOutPath</key>
-  <string>/Users/carlitoswillis/workspace/termdeck/logs/termdeck.log</string>
+  <string>__TERMDECK_DIR__/logs/termdeck.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/carlitoswillis/workspace/termdeck/logs/termdeck.err.log</string>
+  <string>__TERMDECK_DIR__/logs/termdeck.err.log</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/usr/local/bin:/usr/bin:/bin</string>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
 </dict>
 </plist>

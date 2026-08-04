@@ -9,7 +9,10 @@ the exact windows/tabs/panes you already have open, scrollback included.
 1. In iTerm2: **Settings → General → Magic → Enable Python API** (on 3.4 this
    may be under **Settings → API**). Takes effect immediately, no restart.
    If iTerm2 asks whether to allow the connection, approve it.
-2. That's it — the server retries until the API is reachable.
+2. `./setup.sh` — creates `.venv` and installs `requirements.txt`
+   (aiohttp + iterm2). Re-run it any time to update dependencies.
+
+The server retries until the API is reachable, so the order doesn't matter.
 
 ## URLs
 
@@ -22,13 +25,24 @@ The server binds only to localhost and the Tailscale interface — never LAN/pub
 ## Running
 
 - Foreground: `./run.sh`
-- As a LaunchAgent (auto-start, keeps running):
-  ```
-  cp com.carlitos.termdeck.plist ~/Library/LaunchAgents/
-  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.carlitos.termdeck.plist
-  ```
+- As a LaunchAgent (auto-start at login, restarts on crash): `./install-agent.sh`
+  — renders `com.carlitos.termdeck.plist.template` with this checkout's path
+  into `~/Library/LaunchAgents` and loads it. Safe to re-run after moving the
+  repo.
   Stop: `launchctl bootout gui/$(id -u)/com.carlitos.termdeck`
 - Logs: `logs/termdeck.log` and `logs/termdeck.err.log`
+
+Only one copy can hold port 7717. If startup says the address is in use, the
+LaunchAgent is probably already running — stop it before using `./run.sh`.
+
+## Tests
+
+```
+./setup.sh requirements-dev.txt
+./.venv/bin/python -m pytest
+```
+
+They run against a fake iTerm2 layer, so no Mac or running iTerm2 is needed.
 
 ## How it works
 
@@ -41,5 +55,11 @@ The server binds only to localhost and the Tailscale interface — never LAN/pub
 - `static/index.html` — the phone UI: session list → live terminal view with
   key row (Esc/Tab/arrows/^C…), Send box (appends Enter), font size, wrap,
   load-earlier.
+
+Line reads return `{first, start, total, lines}`. iTerm2 numbers lines from the
+start of the session and drops the oldest once scrollback fills up, so `first`
+(its `overflow`) is the oldest line still available — not zero — and the UI
+stitches new frames onto its history by absolute line number, refetching
+anything that scrolled past while it wasn't looking.
 
 Send is delivered via iTerm2's `async_send_text`, exactly as if typed locally.

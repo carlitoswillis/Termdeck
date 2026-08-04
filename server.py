@@ -8,6 +8,7 @@ Requires: iTerm2 with the Python API enabled
 Binds only to localhost and the Tailscale interface — never a public IP.
 """
 import asyncio
+import errno
 import hashlib
 import json
 import subprocess
@@ -53,7 +54,11 @@ class Bridge:
 
     def __init__(self):
         self.conn = None
+        self.app_obj = None
         self.lock = asyncio.Lock()
+        # iTerm2 transactions are per-connection and cannot nest, so every
+        # read that needs one has to take a turn.
+        self.txn_lock = asyncio.Lock()
 
     async def connection(self):
         async with self.lock:
@@ -62,14 +67,33 @@ class Bridge:
             return self.conn
 
     def reset(self):
-        self.conn = None
+        conn, self.conn, self.app_obj = self.conn, None, None
+        sock = getattr(conn, "websocket", None)
+        if sock is not None:
+            # Fire and forget: we only care that the old socket goes away.
+            asyncio.ensure_future(_close_quietly(sock))
 
-    async def app(self):
+    async def app(self, refresh=False):
         try:
-            return await iterm2.async_get_app(await self.connection())
+            conn = await self.connection()
+            if self.app_obj is None:
+                # async_get_app() refreshes the whole app on every call, so
+                # cache it and refresh only when we actually need fresh state.
+                self.app_obj = await iterm2.async_get_app(conn)
+            elif refresh:
+                await self.app_obj.async_refresh()
+            return self.app_obj
         except Exception:
             self.reset()
-            return await iterm2.async_get_app(await self.connection())
+            self.app_obj = await iterm2.async_get_app(await self.connection())
+            return self.app_obj
+
+
+async def _close_quietly(sock):
+    try:
+        await sock.close()
+    except Exception:
+        pass
 
 
 bridge = Bridge()
@@ -77,7 +101,12 @@ bridge = Bridge()
 
 async def get_session(session_id):
     app = await bridge.app()
-    return app.get_session_by_id(session_id)
+    session = app.get_session_by_id(session_id)
+    if session is None:
+        # Could be a tab opened since the last refresh rather than a dead one.
+        app = await bridge.app(refresh=True)
+        session = app.get_session_by_id(session_id)
+    return session
 
 
 async def session_var(session, name):
@@ -88,7 +117,7 @@ async def session_var(session, name):
 
 
 async def list_sessions():
-    app = await bridge.app()
+    app = await bridge.app(refresh=True)
     windows = []
     for w, window in enumerate(app.terminal_windows):
         tabs = []
@@ -113,25 +142,42 @@ async def list_sessions():
     return windows
 
 
-async def tail_state(session, n=TAIL_LINES):
-    info = await session.async_get_line_info()
-    total = info.scrollback_buffer_height + info.mutable_area_height
-    start = max(0, total - n)
-    lines = await session.async_get_contents(start, total - start)
+async def read_lines(session, start=None, count=TAIL_LINES):
+    """Read `count` lines beginning at absolute line number `start`.
+
+    iTerm2 numbers lines from the beginning of the session and drops the
+    oldest ones once scrollback fills up, so the first line still available
+    is `info.overflow` — not zero. Asking for anything below that silently
+    returns short. `start=None` means "the last `count` lines".
+
+    The line info and the contents are read in one transaction so the
+    session can't scroll out from under us in between.
+    """
+    # An open transaction blocks every iTerm2 API client, so never let a
+    # cancelled watcher (viewer switched sessions, socket dropped) abandon one
+    # half-finished — shield the read and let it close itself.
+    return await asyncio.shield(asyncio.ensure_future(
+        _read_lines(session, start, count)))
+
+
+async def _read_lines(session, start, count):
+    conn = await bridge.connection()
+    async with bridge.txn_lock:
+        async with iterm2.Transaction(conn):
+            info = await session.async_get_line_info()
+            first = info.overflow
+            total = first + info.scrollback_buffer_height + info.mutable_area_height
+            count = max(0, count)
+            begin = total - count if start is None else start
+            begin = max(first, min(begin, total))
+            count = min(count, total - begin)
+            lines = await session.async_get_contents(begin, count) if count else []
     return {
-        "start": start,
+        "first": first,
+        "start": begin,
         "total": total,
         "lines": [l.string for l in lines],
     }
-
-
-async def line_range(session, start, count):
-    info = await session.async_get_line_info()
-    total = info.scrollback_buffer_height + info.mutable_area_height
-    start = max(0, min(start, total))
-    count = max(0, min(count, total - start))
-    lines = await session.async_get_contents(start, count) if count else []
-    return {"start": start, "total": total, "lines": [l.string for l in lines]}
 
 
 def error_payload(exc):
@@ -160,12 +206,19 @@ async def api_sessions(_request):
 
 async def api_scrollback(request):
     try:
-        session = await get_session(request.query["session_id"])
+        session_id = request.query.get("session_id")
+        if not session_id:
+            return web.json_response({"message": "session_id required"}, status=400)
+        try:
+            start = int(request.query.get("start", 0))
+            count = int(request.query.get("count", TAIL_LINES))
+        except ValueError:
+            return web.json_response({"message": "start/count must be integers"},
+                                     status=400)
+        session = await get_session(session_id)
         if session is None:
             return web.json_response({"message": "session gone"}, status=404)
-        start = int(request.query.get("start", 0))
-        count = int(request.query.get("count", TAIL_LINES))
-        return web.json_response(await line_range(session, start, count))
+        return web.json_response(await read_lines(session, start, count))
     except Exception as exc:
         bridge.reset()
         return web.json_response(error_payload(exc), status=502)
@@ -191,7 +244,7 @@ async def ws_handler(request):
                 if session is None:
                     await send_json({"type": "gone"})
                     return
-                state = await tail_state(session)
+                state = await read_lines(session)
                 digest = hashlib.md5(
                     ("\n".join(state["lines"]) + f'|{state["total"]}').encode()
                 ).hexdigest()
@@ -206,6 +259,16 @@ async def ws_handler(request):
                 await asyncio.sleep(2)
             await asyncio.sleep(POLL_SECONDS)
 
+    async def stop_watcher():
+        nonlocal watcher
+        if watcher:
+            watcher.cancel()
+            try:
+                await watcher
+            except (asyncio.CancelledError, Exception):
+                pass
+            watcher = None
+
     try:
         async for msg in ws:
             if msg.type != WSMsgType.TEXT:
@@ -216,9 +279,10 @@ async def ws_handler(request):
                 continue
             kind = data.get("type")
             if kind == "watch":
-                if watcher:
-                    watcher.cancel()
+                await stop_watcher()
                 session_id = data.get("session_id")
+                if not session_id:
+                    continue
                 watcher = asyncio.create_task(watch_loop(session_id))
             elif kind in ("input", "key") and session_id:
                 text = (data.get("text", "") if kind == "input"
@@ -233,8 +297,7 @@ async def ws_handler(request):
                     bridge.reset()
                     await send_json(error_payload(exc))
     finally:
-        if watcher:
-            watcher.cancel()
+        await stop_watcher()
     return ws
 
 
@@ -253,30 +316,38 @@ def tailscale_ip():
     return None
 
 
-async def main():
+def make_app():
     app = web.Application()
     app.router.add_get("/", index)
     app.router.add_get("/api/sessions", api_sessions)
     app.router.add_get("/api/scrollback", api_scrollback)
     app.router.add_get("/api/ws", ws_handler)
     app.router.add_static("/static", STATIC)
+    return app
 
-    runner = web.AppRunner(app)
+
+async def main():
+    runner = web.AppRunner(make_app())
     await runner.setup()
 
     hosts = ["127.0.0.1"]
     ts_ip = tailscale_ip()
     if ts_ip:
         hosts.append(ts_ip)
-    bound = 0
+    bound, in_use = 0, False
     for host in hosts:
         try:
             await web.TCPSite(runner, host, PORT).start()
             bound += 1
             print(f"termdeck listening on http://{host}:{PORT}", flush=True)
         except OSError as exc:
+            in_use = in_use or exc.errno == errno.EADDRINUSE
             print(f"could not bind {host}:{PORT}: {exc}", file=sys.stderr, flush=True)
     if not bound:
+        if in_use:
+            print("termdeck is already running (or something else holds port "
+                  f"{PORT}). Stop it first: launchctl bootout "
+                  "gui/$(id -u)/com.carlitos.termdeck", file=sys.stderr, flush=True)
         sys.exit(1)
     if not ts_ip:
         print("warning: no Tailscale IP found; serving on localhost only",
