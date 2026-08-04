@@ -121,6 +121,32 @@ They run against a fake iTerm2 layer, so no Mac or running iTerm2 is needed.
 phone, not whatever iTerm2 has in front on the Mac — and drops you straight
 into it. With no windows left open at all, it opens one.
 
+## Typing
+
+Two modes, because a phone wants both:
+
+- **Compose** (default) — type the whole command, fix what autocorrect did to
+  it, then Send, which appends Enter. Safer for anything destructive.
+- **Live** (the ⌨ button) — every keypress goes straight through as you type,
+  for vim, `less`, y/n prompts and REPLs. Send becomes ⏎. It's deliberately
+  never remembered between page loads: compose is the safer thing to wake up
+  in.
+
+The key row covers what a phone keyboard simply doesn't have — Esc, Tab,
+arrows, PgUp/PgDn. **^** and **⌥** are latches rather than fixed combinations:
+tap **^**, then type any key on your own keyboard, and it goes as that control
+character. That reaches ^A, ^E, ^K, ^X and everything else, not just the four
+that fit on buttons. ⌥ does the same for Alt (sends ESC + key, so ⌥f and ⌥b
+work for word-wise movement). The latch releases after one key, and tapping a
+key-row button clears it.
+
+Under the hood this watches the input field's value change rather than reading
+`keydown`, because software keyboards report almost every key as
+`Unidentified` — predictive text intercepts them. An invisible sentinel
+character sits in the field so Backspace has something to delete and still
+registers on an empty line. The layout is driven by `visualViewport`, so the
+terminal shrinks above the on-screen keyboard instead of hiding behind it.
+
 ## Fitting it to the screen
 
 Every frame carries the pane's real width in cells, and **⤢** sizes the text so

@@ -102,9 +102,16 @@
   .notice b { color: var(--text); }
 
   /* ---- terminal view ---- */
+  /* Fixed, with its height driven by visualViewport: on a phone the on-screen
+     keyboard covers part of the window without changing 100dvh, so a static
+     height hides the very lines you're typing at. */
   #term-view {
     display: none;
     flex-direction: column;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
     height: 100dvh;
     padding-top: env(safe-area-inset-top);
   }
@@ -175,6 +182,8 @@
     font-family: var(--mono);
     padding: 6px 10px;
   }
+  #keys button.on, #live.on { color: var(--accent); border-color: #3a3c44; }
+  #live { flex: none; font-size: 15px; line-height: 1; padding: 6px 10px; }
   #input-bar {
     flex: none;
     display: flex;
@@ -224,20 +233,26 @@
   <div id="status"></div>
   <div id="keys"></div>
   <div id="input-bar">
+    <button id="live" title="Send every keystroke as you type">⌨</button>
     <input id="input" type="text" autocomplete="off" autocorrect="off"
-           autocapitalize="off" spellcheck="false" placeholder="Type, then Send (adds ⏎)">
+           autocapitalize="off" spellcheck="false" enterkeyhint="send"
+           placeholder="Type, then Send (adds ⏎)">
     <button id="send">Send</button>
   </div>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
+/* "#ctrl"/"#alt" are latches: tap one, then type any key on the phone's own
+   keyboard to send that combination. Everything iOS can't produce lives
+   here — it has no Esc, Ctrl, Tab or arrows, and never will. */
 const KEYS = [
-  ["esc","Esc"],["tab","Tab"],["shift-tab","⇧Tab"],["up","↑"],["down","↓"],
-  ["left","←"],["right","→"],["enter","⏎"],["ctrl-c","^C"],["ctrl-d","^D"],
-  ["ctrl-z","^Z"],["ctrl-r","^R"],["ctrl-l","^L"],["ctrl-u","^U"],
+  ["esc","Esc"],["tab","Tab"],["shift-tab","⇧Tab"],["#ctrl","^"],["#alt","⌥"],
+  ["up","↑"],["down","↓"],["left","←"],["right","→"],["enter","⏎"],
+  ["ctrl-c","^C"],["ctrl-d","^D"],["ctrl-z","^Z"],["ctrl-r","^R"],
   ["backspace","⌫"],["pgup","PgUp"],["pgdn","PgDn"],
 ];
+const SENTINEL = "⁣";   // invisible, but something Backspace can delete
 
 const CHUNK = 400;        // lines per "Load earlier" request
 const MAX_GAP = 5000;     // bigger gaps aren't worth stitching back together
@@ -371,6 +386,8 @@ function openSession(id, title, push = true) {
   $("status").textContent = "connecting…";
   $("list-view").style.display = "none";
   $("term-view").style.display = "flex";
+  latch = null; paintLatches();
+  fitViewport();
   clearInterval(listTimer);
   connect();
 }
@@ -499,14 +516,101 @@ async function loadEarlier() {
     $("load-earlier").textContent = "Load earlier";
   }
 }
+function sendText(text) {
+  if (text && ws && ws.readyState === 1) ws.send(JSON.stringify({type: "input", text}));
+}
 function sendInput() {
   const box = $("input");
-  if (!ws || ws.readyState !== 1) return;
-  ws.send(JSON.stringify({type: "input", text: box.value + "\r"}));
+  if (live) { sendText("\r"); return; }
+  sendText(box.value + "\r");
   box.value = "";
+  lastValue = "";
 }
 function sendKey(name) {
+  latch = null; paintLatches();      // a row key is itself the key you meant
   if (ws && ws.readyState === 1) ws.send(JSON.stringify({type: "key", name}));
+}
+
+/* ---------------- keyboard ----------------
+   Software keyboards don't report usable keydown events — most keys arrive as
+   "Unidentified" because of predictive text — so watch the field's value
+   change and send the difference instead. */
+let latch = null, live = false, lastValue = "";
+
+function paintLatches() {
+  $("k-ctrl").classList.toggle("on", latch === "ctrl");
+  $("k-alt").classList.toggle("on", latch === "alt");
+}
+function setLatch(kind) {
+  latch = latch === kind ? null : kind;
+  paintLatches();
+  $("input").focus();                // keep the keyboard up for the next key
+}
+function controlChar(c) {
+  const u = c.toUpperCase();
+  if (u >= "A" && u <= "Z") return String.fromCharCode(u.charCodeAt(0) - 64);
+  return {"[": "\x1b", "\\": "\x1c", "]": "\x1d", "^": "\x1e", "_": "\x1f",
+          "?": "\x7f", " ": "\x00"}[c] || null;
+}
+/* Consume the latch against one typed character. */
+function latched(ch) {
+  const text = latch === "ctrl" ? controlChar(ch) : "\x1b" + ch;
+  latch = null;
+  paintLatches();
+  return text;
+}
+function onInput() {
+  const box = $("input");
+  if (live) {
+    const v = box.value;
+    if (v.length > SENTINEL.length) {
+      const added = v.startsWith(SENTINEL) ? v.slice(SENTINEL.length)
+                                           : v.replace(SENTINEL, "");
+      sendText(latch && added ? latched(added[0]) + added.slice(1) : added);
+    } else if (v.length < SENTINEL.length) {
+      sendText("\x7f");              // backspace ate the sentinel
+    }
+    box.value = SENTINEL;
+    return;
+  }
+  if (latch && box.value.length > lastValue.length) {
+    // Pull the character back out of the box and send it as a combination.
+    const ch = box.value[box.value.length - 1];
+    box.value = lastValue;
+    sendText(latched(ch));
+    return;
+  }
+  lastValue = box.value;
+}
+function setLive(on) {
+  live = on;
+  const box = $("input");
+  $("live").classList.toggle("on", on);
+  $("send").textContent = on ? "⏎" : "Send";
+  box.placeholder = on ? "keys go straight through" : "Type, then Send (adds ⏎)";
+  box.value = on ? SENTINEL : "";
+  lastValue = box.value;
+  if (on) box.focus();
+}
+
+/* The on-screen keyboard covers the window without shrinking 100dvh, so drive
+   the height from visualViewport instead. */
+const vv = window.visualViewport;
+let lastViewportHeight = vv ? vv.height : 0;
+function fitViewport() {
+  if (!currentId) return;
+  const view = $("term-view"), wrap = $("screen-wrap");
+  const height = vv ? vv.height : innerHeight;
+  const opening = height < lastViewportHeight - 40;   // keyboard just appeared
+  lastViewportHeight = height;
+  view.style.height = height + "px";
+  view.style.top = (vv ? vv.offsetTop : 0) + "px";
+  applyFit();
+  if (opening) wrap.scrollTop = wrap.scrollHeight;
+}
+if (vv) {
+  vv.addEventListener("resize", fitViewport);
+  vv.addEventListener("scroll", fitViewport);
 }
 function sendActivate() {
   if (ws && ws.readyState === 1 && currentId) ws.send(JSON.stringify({type: "activate"}));
@@ -517,8 +621,17 @@ $("back").onclick = () => closeSession();
 $("new-tab").onclick = () => createSession("tab");
 $("new-window").onclick = () => createSession("window");
 $("send").onclick = sendInput;
+$("live").onclick = () => setLive(!live);
+$("input").addEventListener("input", onInput);
 $("input").addEventListener("keydown", e => {
   if (e.key === "Enter") { e.preventDefault(); sendInput(); }
+  // Hardware keyboards report these properly; software ones go through onInput.
+  else if (live && e.key === "Backspace") { e.preventDefault(); sendText("\x7f"); }
+  else if (live && e.key === "Tab") { e.preventDefault(); sendText("\t"); }
+  else if (live && e.key.startsWith("Arrow")) {
+    e.preventDefault();
+    sendKey(e.key.slice(5).toLowerCase());
+  }
 });
 $("load-earlier").onclick = loadEarlier;
 function setFont(size, persist = true) {
@@ -582,10 +695,17 @@ setFont(fontSize);
 setWrap(!!localStorage.getItem("wrap"));
 setFollow(follow);
 setFit(fit);
+setLive(false);   // never persisted: compose is the safer thing to wake up in
 KEYS.forEach(([name, label]) => {
   const b = document.createElement("button");
   b.textContent = label;
-  b.onclick = () => sendKey(name);
+  if (name.startsWith("#")) {
+    b.id = "k-" + name.slice(1);
+    b.title = (name === "#ctrl" ? "Ctrl" : "Alt") + " + the next key you type";
+    b.onclick = () => setLatch(name.slice(1));
+  } else {
+    b.onclick = () => sendKey(name);
+  }
   $("keys").appendChild(b);
 });
 
