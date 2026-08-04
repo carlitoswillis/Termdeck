@@ -38,17 +38,23 @@ async def main(connection):
         print(f"  rebuilt       : {rebuilt!r}")
         if line.string != rebuilt:
             print("  DIFFERENT — cells were missing from the string")
-        odd = []
+        odd, blanks, nuls = [], 0, 0
         x = 0
         while True:
             try:
                 piece = line.string_at(x)
             except IndexError:
                 break
-            if len(piece) != 1:
+            if piece == "":
+                blanks += 1
+                odd.append(f"cell {x}: empty (no code points)")
+            elif not piece.strip("\x00"):
+                nuls += 1
+                odd.append(f"cell {x}: NUL {piece!r}")
+            elif len(piece) != 1:
                 odd.append(f"cell {x}: {len(piece)}cp {piece!r}")
             x += 1
-        print(f"  cells         : {x}")
+        print(f"  cells         : {x}  (empty: {blanks}, NUL: {nuls})")
         for entry in odd[:12]:
             print(f"    {entry}")
         if len(odd) > 12:

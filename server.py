@@ -247,6 +247,11 @@ def is_wide(ch):
     return unicodedata.east_asian_width(ch) in ("W", "F")
 
 
+def blanked(text):
+    """The line's actual content, ignoring however its blanks are spelled."""
+    return text.replace(" ", "").replace("\x00", "")
+
+
 def rebuild_line(line):
     """Rebuild one line from its cells, and its style runs alongside.
 
@@ -270,7 +275,12 @@ def rebuild_line(line):
             piece = line.string_at(x)
         except IndexError:
             break
-        if piece == "":
+        if piece and not piece.strip("\x00"):
+            # A blank cell iTerm2 filled with NUL rather than a space. It has
+            # a code point, so it survives into `string` — and then renders as
+            # nothing at all, running the words either side together.
+            piece = " " * len(piece)
+        elif piece == "":
             previous = pieces[-1] if pieces else ""
             piece = "" if previous and is_wide(previous[-1]) else " "
         style = line.style_at(x)
@@ -284,8 +294,14 @@ def rebuild_line(line):
     if count:
         runs.append([count] + encode_style(current))
 
-    # Every unwritten cell to the right of the text just became a space.
     text = "".join(pieces)
+    if blanked(text) != blanked(line.string):
+        # The walk didn't reproduce what iTerm2 says this line holds. Trust
+        # iTerm2 and lose the styling — never the characters.
+        return line.string.replace("\x00", " ").rstrip(), []
+
+    # Every unwritten cell to the right of the text just became a space.
+    text = text.replace("\x00", " ")
     trimmed = text.rstrip()
     if len(trimmed) < len(text):
         kept, total = [], 0

@@ -16,6 +16,37 @@ def test_cells_a_tui_never_wrote_come_back_as_spaces():
     assert text == ["foo   bar"]
 
 
+def test_blank_cells_spelled_as_nul_become_spaces():
+    """iTerm2 uses code 0 for a blank cell. It has a code point, so it does
+    reach us — and then renders as nothing, running the words together."""
+    line = FakeLine("", cells=["a", "\x00", "\x00", "b"])
+    assert line.string == "a\x00\x00b"
+
+    text, _ = server.line_payload([line])
+
+    assert text == ["a  b"]
+
+
+def test_a_line_of_nul_padding_comes_back_clean():
+    line = FakeLine("", cells=list("hi") + ["\x00"] * 40)
+
+    text, _ = server.line_payload([line])
+
+    assert text == ["hi"]
+
+
+def test_the_rebuild_never_loses_characters():
+    """If walking the cells doesn't reproduce what iTerm2 says the line holds,
+    the text wins and the styling is what gets dropped."""
+    line = FakeLine("", cells=["a", "b"])
+    line.string = "abcdef"              # more than the cells account for
+
+    text, styles = server.line_payload([line])
+
+    assert text == ["abcdef"]
+    assert styles == {}
+
+
 def test_the_second_half_of_a_wide_character_is_not_a_space():
     """An empty cell also means 'the previous character is two wide'. Putting
     a space there would shift every CJK and emoji line to the right."""
