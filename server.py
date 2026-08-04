@@ -21,6 +21,7 @@ import secrets
 import socket
 import subprocess
 import sys
+import time
 import traceback
 import unicodedata
 from pathlib import Path
@@ -37,6 +38,7 @@ TAIL_LINES = 400          # lines of scrollback kept in the live view
 POLL_SECONDS = 0.4        # fallback poll interval, when iTerm2 won't push
 IDLE_SECONDS = 5          # re-read anyway, in case a notification went missing
 MIN_FRAME_SECONDS = 0.12  # ceiling on how often a busy session is re-read
+RETRY_CAP_SECONDS = 10    # slowest we back off to while iTerm2 is unreachable
 REBIND_SECONDS = 30       # how often to recheck the Tailscale address
 STATIC = Path(__file__).parent / "static"
 PASSWORD_FILE = Path(__file__).parent / ".termdeck-password"
@@ -97,6 +99,11 @@ class Bridge:
     def __init__(self):
         self.conn = None
         self.app_obj = None
+        # While iTerm2 is closed, every attempt costs an AppleScript asking
+        # whether it's running. A phone left on the session list would do that
+        # every few seconds forever, so failures back off.
+        self.failures = 0
+        self.retry_at = 0.0
         self.lock = asyncio.Lock()
         # iTerm2 transactions are per-connection and cannot nest, so every
         # read that needs one has to take a turn.
@@ -104,8 +111,20 @@ class Bridge:
 
     async def connection(self):
         async with self.lock:
-            if self.conn is None:
+            if self.conn is not None:
+                return self.conn
+            if time.monotonic() < self.retry_at:
+                raise ConnectionError(
+                    "can't connect to iTerm2 — is it running?")
+            try:
                 self.conn = await iterm2.Connection.async_create()
+            except Exception:
+                self.failures += 1
+                self.retry_at = time.monotonic() + min(2 ** self.failures,
+                                                       RETRY_CAP_SECONDS)
+                raise
+            self.failures = 0
+            self.retry_at = 0.0
             return self.conn
 
     def reset(self):
@@ -557,10 +576,25 @@ async def activate_session(session):
     await app.async_activate(raise_all_windows=False)
 
 
+_logged_at = {}
+LOG_REPEAT_SECONDS = 60
+
+
 def log_error(where, exc):
-    """Say what went wrong in the log as well as on the phone. A failure the
-    phone shows as a dead connection is unreadable from the phone."""
-    print(f"{where}: {exc.__class__.__name__}: {exc}", file=sys.stderr, flush=True)
+    """Say what went wrong in the log as well as on the phone — but once.
+
+    A failure the phone shows as a dead connection is unreadable from the
+    phone. It's also usually a failure that repeats every couple of seconds,
+    and a traceback each time turns the log into landfill.
+    """
+    summary = f"{where}: {exc.__class__.__name__}: {exc}"
+    now = time.monotonic()
+    if now - _logged_at.get(summary, -1e9) < LOG_REPEAT_SECONDS:
+        return
+    if len(_logged_at) > 200:
+        _logged_at.clear()
+    _logged_at[summary] = now
+    print(summary, file=sys.stderr, flush=True)
     traceback.print_exc()
     sys.stderr.flush()
 

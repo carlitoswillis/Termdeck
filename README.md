@@ -82,6 +82,19 @@ proxy in front could all widen that without touching this code.
   `--no-auth` ignores a password you've set. Deleting `.termdeck-session`
   signs every device out at once without changing the password.
 
+## What it does when iTerm2 is closed
+
+Nothing, unless a browser is open. There's no background polling of iTerm2:
+the session list is only fetched while a page is showing it, and a session is
+only read while someone is watching it. With no device connected, termdeck
+sits idle apart from re-checking its own Tailscale address every 30s.
+
+With a page open and iTerm2 not running, it retries — backing off from 1s to
+a 10s ceiling, so opening iTerm2 is noticed quickly without hammering in the
+meantime. It never launches iTerm2: the check asks macOS whether it's running
+and stops there. Repeated identical failures are logged once a minute rather
+than every attempt, so a night with iTerm2 closed doesn't fill the log.
+
 ## Surviving sleep
 
 Sleep doesn't kill the process, so a supervisor has nothing to restart — but
