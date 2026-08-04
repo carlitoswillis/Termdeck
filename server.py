@@ -850,12 +850,27 @@ async def api_cells(request):
     out.append("")
     if styled_cells:
         out.append(f"iTerm2 described the style of {styled_cells} cells — "
-                   "colour information is arriving.")
+                   "colour information is arriving, so anything monochrome "
+                   "on the phone is a rendering bug.")
     else:
+        try:
+            numeric = tuple(int(part) for part in module.split(".")[:2])
+        except Exception:
+            numeric = (0, 0)
         out.append("iTerm2 described the style of NO cells, which is why "
-                   "there is no colour. Either the iterm2 module is too old "
-                   "to ask for it (needs 2.10+; run ./install.sh, which now "
-                   "upgrades) or iTerm2 itself is too old to send it.")
+                   "there is no colour.")
+        if numeric < (2, 10):
+            out.append(f"CAUSE: the iterm2 module here is {module}, and only "
+                       "2.10+ ever asks iTerm2 for styles.")
+            out.append("FIX:   ./install.sh   (a pm2 restart does not upgrade "
+                       "it, and nothing needs to close — not iTerm2, not your "
+                       "sessions)")
+        else:
+            out.append(f"CAUSE: the iterm2 module is {module}, new enough to "
+                       "ask — so iTerm2 itself isn't sending styles.")
+            out.append("FIX:   upgrade iTerm2 (check Help -> About). That does "
+                       "mean quitting it, so it can wait — colour is the only "
+                       "thing affected.")
     return web.Response(text="\n".join(out) + "\n", content_type="text/plain")
 
 
