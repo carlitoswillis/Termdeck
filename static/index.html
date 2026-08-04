@@ -64,22 +64,47 @@
   #list-actions button { font-size: 13px; }
   #list-actions button:disabled { opacity: .5; }
   .window-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     color: var(--dim);
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: .08em;
     margin: 14px 2px 6px;
   }
+  .window-label span { flex: 1; }
+  .window-label button { font-size: 11px; padding: 3px 9px; text-transform: none; }
   .card {
+    display: flex;
+    align-items: center;
     width: 100%;
-    text-align: left;
-    display: block;
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 8px;
-    padding: 10px 12px;
     margin-bottom: 8px;
   }
+  .card .open {
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+    background: none;
+    border: none;
+    border-radius: 8px 0 0 8px;
+    padding: 10px 12px;
+  }
+  .card .close {
+    flex: none;
+    align-self: stretch;
+    background: none;
+    border: none;
+    border-left: 1px solid var(--border);
+    border-radius: 0 8px 8px 0;
+    color: var(--dim);
+    padding: 0 14px;
+    font-size: 15px;
+  }
+  .card .close:active, .window-label button:active { background: #202127; }
   .card .title { font-weight: 600; font-size: 14px; }
   .card .meta {
     color: var(--dim);
@@ -228,7 +253,6 @@
 <div id="list-view">
   <h1>termdeck <small id="list-status"></small></h1>
   <div id="list-actions">
-    <button id="new-tab">+ Tab</button>
     <button id="new-window">+ Window</button>
   </div>
   <div id="list"></div>
@@ -351,27 +375,51 @@ function render(windows) {
   windows.forEach(w => {
     const label = document.createElement("div");
     label.className = "window-label";
-    label.textContent = `Window ${w.index + 1}`;
+    const name = document.createElement("span");
+    name.textContent = `Window ${w.index + 1}`;
+    // Per-window, so which window a tab opens in is never a guess.
+    const add = document.createElement("button");
+    add.textContent = "+ Tab";
+    add.onclick = () => createSession("tab", w.id, add);
+    const shut = document.createElement("button");
+    shut.textContent = "✕";
+    shut.title = "Close this window";
+    shut.onclick = () => closeThing("window", w.id,
+      `Close window ${w.index + 1} and everything in it?`);
+    label.append(name, add, shut);
     frag.appendChild(label);
+
     w.tabs.forEach(tab => {
       tab.sessions.forEach(s => {
         count++;
         titles[s.id] = s.title;
-        const card = document.createElement("button");
-        card.className = "card";
         const [mark, note] = activityOf(s);
-        const meta = [note || s.job, s.path.replace(/^\/Users\/[^/]+/, "~"),
-                      s.tty.replace("/dev/", "")].filter(Boolean).join(" · ");
-        card.innerHTML = `<div class="title"></div><div class="meta"></div>`;
-        const title = card.querySelector(".title");
+        const card = document.createElement("div");
+        card.className = "card";
+
+        const open = document.createElement("button");
+        open.className = "open";
+        open.innerHTML = `<div class="title"></div><div class="meta"></div>`;
+        const title = open.querySelector(".title");
         if (mark) {
           const dot = document.createElement("span");
           dot.className = "dot " + mark;
           title.appendChild(dot);
         }
         title.appendChild(document.createTextNode(`Tab ${tab.index + 1} — ${s.title}`));
-        card.querySelector(".meta").textContent = meta;
-        card.onclick = () => openSession(s.id, s.title);
+        open.querySelector(".meta").textContent =
+          [note || s.job, s.path.replace(/^\/Users\/[^/]+/, "~"),
+           s.tty.replace("/dev/", "")].filter(Boolean).join(" · ");
+        open.onclick = () => openSession(s.id, s.title);
+
+        const shutTab = document.createElement("button");
+        shutTab.className = "close";
+        shutTab.textContent = "✕";
+        shutTab.title = "Close this tab";
+        shutTab.onclick = () => closeThing("session", s.id,
+          `Close “${s.title}”${s.busy ? ` — ${s.job} is still running` : ""}?`);
+
+        card.append(open, shutTab);
         frag.appendChild(card);
       });
     });
@@ -385,16 +433,30 @@ function render(windows) {
   $("list").replaceChildren(frag);
 }
 
+async function closeThing(kind, id, question) {
+  if (!confirm(question)) return;
+  try {
+    const r = await fetch("/api/close", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({kind, id}),
+    });
+    if (!r.ok) showNotice(await r.json());
+  } catch (e) {
+    showNotice({message: String(e)});
+  }
+  refreshList();
+}
+
 /* A new tab lands in the window of whatever you were last looking at, so the
    phone keeps working where you left off. */
-async function createSession(kind) {
-  const btn = $(kind === "tab" ? "new-tab" : "new-window");
-  btn.disabled = true;
+async function createSession(kind, windowId, btn) {
+  if (btn) btn.disabled = true;
   try {
     const r = await fetch("/api/new", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({kind, session_id: lastId}),
+      body: JSON.stringify({kind, session_id: lastId, window_id: windowId}),
     });
     const data = await r.json();
     if (r.ok) openSession(data.session_id, data.title);
@@ -402,7 +464,7 @@ async function createSession(kind) {
   } catch (e) {
     showNotice({message: String(e)});
   } finally {
-    btn.disabled = false;
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -826,8 +888,7 @@ function sendActivate() {
 
 /* ---------------- wire up ---------------- */
 $("back").onclick = () => closeSession();
-$("new-tab").onclick = () => createSession("tab");
-$("new-window").onclick = () => createSession("window");
+$("new-window").onclick = () => createSession("window", null, $("new-window"));
 $("send").onclick = sendInput;
 $("live").onclick = () => setLive(!live);
 $("input").addEventListener("input", onInput);

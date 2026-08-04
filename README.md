@@ -147,9 +147,16 @@ They run against a fake iTerm2 layer, so no Mac or running iTerm2 is needed.
   **+ Window**) → live terminal view with key row (Esc/Tab/arrows/^C…), Send
   box (appends Enter), font size, wrap, load-earlier, follow-focus.
 
-**+ Tab** opens beside the session you were last watching — the window on your
-phone, not whatever iTerm2 has in front on the Mac — and drops you straight
-into it. With no windows left open at all, it opens one.
+Each window's header carries its own **+ Tab**, so which window a tab opens in
+is something you point at rather than something you find out afterwards. It
+drops you straight into the new tab. **+ Window** at the top opens a new
+window, and with no windows left open at all, **+ Tab** opens one too.
+
+**✕** on a window header closes the window and everything in it; **✕** on a
+card closes that pane. Both ask first, and the question names what's running
+if something is ("Close “shell” — claude is still running?"). The close itself
+is forced, because the unforced call puts a confirmation sheet on the *Mac* —
+no use to someone holding a phone.
 
 ## Typing
 

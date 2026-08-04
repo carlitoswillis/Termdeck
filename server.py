@@ -178,11 +178,26 @@ async def list_sessions():
                     # prompt — whatever was running has finished.
                     "busy": bool(job) and job.lstrip("-") not in SHELLS,
                 })
-            tabs.append({"index": t, "sessions": sessions,
+            tabs.append({"index": t, "id": tab.tab_id, "sessions": sessions,
                          "active": tab.tab_id == window.current_tab.tab_id
                          if window.current_tab else False})
-        windows.append({"index": w, "tabs": tabs})
+        windows.append({"index": w, "id": window.window_id, "tabs": tabs})
     return windows
+
+
+def find_window(app, window_id):
+    for window in app.terminal_windows:
+        if window.window_id == window_id:
+            return window
+    return None
+
+
+def find_tab(app, tab_id):
+    for window in app.terminal_windows:
+        for tab in window.tabs:
+            if tab.tab_id == tab_id:
+                return tab
+    return None
 
 
 async def read_lines(session, start=None, count=TAIL_LINES):
@@ -359,18 +374,20 @@ def window_for_session(app, session_id):
     return None
 
 
-async def new_session(kind, near_session_id=None):
+async def new_session(kind, near_session_id=None, window_id=None):
     """Open a tab or a window and hand back the session inside it.
 
-    A new tab goes in the window of the session the phone was last watching,
-    falling back to iTerm2's current window — and to a new window when there
-    is none (every window closed, iTerm2 sitting in the dock).
+    A new tab goes wherever it was asked to: the phone names the window, so
+    "which window did that land in?" is never a guess. Failing that it falls
+    back to the window of the session last watched, then iTerm2's current
+    window, then a new window when there are none left at all.
     """
     app = await bridge.app(refresh=True)
     window = None
     if kind == "tab":
-        window = (window_for_session(app, near_session_id) if near_session_id
-                  else None) or app.current_window
+        window = (find_window(app, window_id) if window_id else None) \
+            or (window_for_session(app, near_session_id) if near_session_id
+                else None) or app.current_window
     if window is None:
         window = await iterm2.Window.async_create(await bridge.connection())
         if window is None:
@@ -629,11 +646,42 @@ async def api_new(request):
         return web.json_response({"message": "kind must be tab or window"},
                                  status=400)
     try:
-        session = await new_session(kind, data.get("session_id"))
+        session = await new_session(kind, data.get("session_id"),
+                                    data.get("window_id"))
         title = await session_var(session, "autoName") or session.name or "shell"
         return web.json_response({"session_id": session.session_id, "title": title})
     except Exception as exc:
         log_error(f"opening a {kind}", exc)
+        bridge.reset()
+        return web.json_response(error_payload(exc), status=502)
+
+
+async def api_close(request):
+    """Close a pane, a tab or a window.
+
+    Always forced: the unforced call puts a confirmation sheet on the Mac,
+    which is no use at all to someone holding a phone. The phone asks instead.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    kind, target = data.get("kind"), data.get("id")
+    if kind not in ("session", "tab", "window") or not target:
+        return web.json_response({"message": "kind must be session, tab or "
+                                             "window, with an id"}, status=400)
+    try:
+        app = await bridge.app(refresh=True)
+        thing = ({"session": app.get_session_by_id,
+                  "tab": lambda i: find_tab(app, i),
+                  "window": lambda i: find_window(app, i)}[kind])(target)
+        if thing is None:
+            return web.json_response({"message": f"{kind} already gone"},
+                                     status=404)
+        await thing.async_close(force=True)
+        return web.json_response({"closed": kind})
+    except Exception as exc:
+        log_error(f"closing a {kind}", exc)
         bridge.reset()
         return web.json_response(error_payload(exc), status=502)
 
@@ -840,6 +888,7 @@ def make_app(password=None, allow_lan=False, secret="test-secret"):
     app.router.add_get("/api/sessions", api_sessions)
     app.router.add_get("/api/scrollback", api_scrollback)
     app.router.add_post("/api/new", api_new)
+    app.router.add_post("/api/close", api_close)
     app.router.add_get("/api/ws", ws_handler)
     app.router.add_static("/static", STATIC)
     return app

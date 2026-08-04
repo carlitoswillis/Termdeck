@@ -82,6 +82,7 @@ class FakeSession:
         self.job = "zsh"
         self.cursor = (0, 0)          # (x, y), y relative to the screen top
         self.cursor_error = None
+        self.closed = None
 
     async def async_get_line_info(self):
         return self.info
@@ -128,6 +129,9 @@ class FakeSession:
             raise self.activate_error
         self.activations.append((select_tab, order_window_front))
 
+    async def async_close(self, force=False):
+        self.closed = force
+
 
 class FakeStreamer:
     """iTerm2's screen streamer: async_get() blocks until the screen changes."""
@@ -159,15 +163,24 @@ class FakeTab:
     def __init__(self, sessions, tab_id="tab-1"):
         self.sessions = sessions
         self.tab_id = tab_id
+        self.closed = None
+
+    async def async_close(self, force=False):
+        self.closed = force
 
 
 class FakeWindow:
     counter = 0
 
-    def __init__(self, tabs):
+    def __init__(self, tabs, window_id="win-1"):
         self.tabs = tabs
+        self.window_id = window_id
         self.current_tab = tabs[0] if tabs else None
         self.refuse_tab = False
+        self.closed = None
+
+    async def async_close(self, force=False):
+        self.closed = force
 
     async def async_create_tab(self, profile=None, command=None, index=None,
                                profile_customizations=None):
@@ -242,7 +255,8 @@ def fake_iterm2(monkeypatch):
             FakeWindow.counter += 1
             n = FakeWindow.counter
             window = FakeWindow([FakeTab([FakeSession(f"win-{n}")],
-                                         tab_id=f"tab-win-{n}")])
+                                         tab_id=f"tab-win-{n}")],
+                                window_id=f"win-id-{n}")
             app.terminal_windows.append(window)
             return window
 
