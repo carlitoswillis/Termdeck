@@ -78,6 +78,19 @@ KEYMAP = {
 }
 
 
+def forget_cached_app():
+    """Drop the iterm2 library's global App.
+
+    async_get_app() hands back a cached App and refreshes it — on whatever
+    connection built it. After iTerm2 restarts, that connection is dead, so
+    every retry refreshes a corpse and fails again with "no close frame
+    received or sent". Nothing recovers until this is cleared, which looks
+    from the outside like a server that is up and permanently broken.
+    """
+    with contextlib.suppress(Exception):
+        iterm2.app.invalidate_app()
+
+
 class Bridge:
     """Holds one connection to iTerm2's API socket, reconnecting on failure."""
 
@@ -97,6 +110,7 @@ class Bridge:
 
     def reset(self):
         conn, self.conn, self.app_obj = self.conn, None, None
+        forget_cached_app()
         sock = getattr(conn, "websocket", None)
         if sock is not None:
             # Fire and forget: we only care that the old socket goes away.
@@ -555,7 +569,11 @@ def error_payload(exc):
     msg = str(exc) or exc.__class__.__name__
     hint = ""
     low = msg.lower()
-    if "refused" in low or "no such file" in low or "connect" in low:
+    if "close frame" in low or "connection closed" in low:
+        # What iTerm2 quitting or restarting looks like from here.
+        hint = ("Lost the connection to iTerm2 — it was probably restarted. "
+                "Reconnecting; this clears itself within a few seconds.")
+    elif "refused" in low or "no such file" in low or "connect" in low:
         hint = ("Can't reach iTerm2's API. Enable it in iTerm2 -> Settings -> "
                 "General -> Magic -> 'Enable Python API', then retry.")
     return {"type": "error", "message": msg, "hint": hint}
