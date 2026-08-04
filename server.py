@@ -809,9 +809,12 @@ async def api_cells(request):
         module = importlib.metadata.version("iterm2")
     except Exception:
         module = "unknown"
+    protocol = "unknown"
+    with contextlib.suppress(Exception):
+        protocol = ".".join(str(p) for p in conn.iterm2_protocol_version)
     styled_cells = 0
     out = [f"termdeck v{VERSION}  —  iterm2 module {module}  —  "
-           f"last {len(lines)} lines", ""]
+           f"iTerm2 API protocol {protocol}  —  last {len(lines)} lines", ""]
     for n, line in enumerate(lines, start=begin):
         rebuilt, runs = rebuild_line(line)
         out.append(f"--- line {n} " + "-" * 40)
@@ -866,11 +869,13 @@ async def api_cells(request):
                        "it, and nothing needs to close — not iTerm2, not your "
                        "sessions)")
         else:
-            out.append(f"CAUSE: the iterm2 module is {module}, new enough to "
-                       "ask — so iTerm2 itself isn't sending styles.")
-            out.append("FIX:   upgrade iTerm2 (check Help -> About). That does "
-                       "mean quitting it, so it can wait — colour is the only "
-                       "thing affected.")
+            out.append(f"CAUSE: the iterm2 module is {module}, and every "
+                       "request does set include_styles — so iTerm2 itself "
+                       f"is not filling it in. Its API protocol is {protocol}.")
+            out.append("FIX:   upgrade iTerm2 (Help -> Check For Updates). "
+                       "That means quitting it, so it can wait: colour is the "
+                       "only thing affected, and nothing else here depends on "
+                       "it.")
     return web.Response(text="\n".join(out) + "\n", content_type="text/plain")
 
 
