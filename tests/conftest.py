@@ -1,4 +1,5 @@
 """Fakes standing in for iTerm2, so the server can be tested without a Mac."""
+import asyncio
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -65,6 +66,8 @@ class FakeSession:
         self.activations = []
         self.activate_error = None
         self.line_styles = None       # tests can hand back per-line styles
+        self.streamer = None
+        self.streamer_error = None
 
     async def async_get_line_info(self):
         return self.info
@@ -86,10 +89,42 @@ class FakeSession:
     async def async_send_text(self, text, suppress_broadcast=False):
         self.sent.append(text)
 
+    def get_screen_streamer(self, want_contents=True):
+        if self.streamer_error:
+            raise self.streamer_error
+        self.streamer = FakeStreamer()
+        return self.streamer
+
     async def async_activate(self, select_tab=True, order_window_front=True):
         if self.activate_error:
             raise self.activate_error
         self.activations.append((select_tab, order_window_front))
+
+
+class FakeStreamer:
+    """iTerm2's screen streamer: async_get() blocks until the screen changes."""
+
+    def __init__(self):
+        self.changed = asyncio.Event()
+        self.entered = False
+        self.exited = False
+        self.gets = 0
+
+    async def __aenter__(self):
+        self.entered = True
+        return self
+
+    async def __aexit__(self, *exc):
+        self.exited = True
+
+    async def async_get(self, style=False):
+        self.gets += 1
+        await self.changed.wait()
+        self.changed.clear()
+        return None
+
+    def push(self):
+        self.changed.set()
 
 
 class FakeTab:

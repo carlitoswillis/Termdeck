@@ -9,6 +9,7 @@ Binds only to localhost and the Tailscale interface — never a public IP.
 """
 import argparse
 import asyncio
+import contextlib
 import errno
 import hashlib
 import hmac
@@ -25,7 +26,8 @@ import iterm2
 
 PORT = 7717
 TAIL_LINES = 400          # lines of scrollback kept in the live view
-POLL_SECONDS = 0.4        # screen poll interval per viewer
+POLL_SECONDS = 0.4        # fallback poll interval, when iTerm2 won't push
+IDLE_SECONDS = 5          # re-read anyway, in case a notification went missing
 REBIND_SECONDS = 30       # how often to recheck the Tailscale address
 STATIC = Path(__file__).parent / "static"
 TOKEN_FILE = Path(__file__).parent / ".termdeck-token"
@@ -298,6 +300,47 @@ async def new_session(kind, near_session_id=None):
     return tab.sessions[0]
 
 
+@contextlib.asynccontextmanager
+async def change_signal(session):
+    """Hands back a `wait()` that returns when the screen probably changed.
+
+    iTerm2 can push a notification when it does, which beats asking four times
+    a second forever. If subscribing fails — older iTerm2, a connection that
+    just dropped — fall back to polling rather than going silent.
+    """
+    streamer = None
+    try:
+        streamer = session.get_screen_streamer(want_contents=False)
+        await streamer.__aenter__()
+    except Exception:
+        streamer = None
+
+    pending = None
+
+    async def wait_for_push():
+        # Keep one outstanding request alive across timeouts: cancelling it
+        # would drop any notification that arrived in the meantime.
+        nonlocal pending
+        if pending is None:
+            pending = asyncio.ensure_future(streamer.async_get())
+        done, _ = await asyncio.wait({pending}, timeout=IDLE_SECONDS)
+        if pending in done:
+            finished, pending = pending, None
+            finished.result()          # re-raise whatever it hit
+
+    async def wait_by_polling():
+        await asyncio.sleep(POLL_SECONDS)
+
+    try:
+        yield wait_for_push if streamer else wait_by_polling
+    finally:
+        if pending:
+            pending.cancel()
+        if streamer:
+            with contextlib.suppress(Exception):
+                await streamer.__aexit__(None, None, None)
+
+
 async def activate_session(session):
     """Bring a session to the front on the Mac: select the pane, select its
     tab, raise its window, and put iTerm2 itself in the foreground."""
@@ -458,19 +501,25 @@ async def ws_handler(request):
                 if session is None:
                     await send_json({"type": "gone"})
                     return
-                state = await read_lines(session)
-                digest = hashlib.md5(
-                    json.dumps(state, sort_keys=True).encode()).hexdigest()
-                if digest != last_hash:
-                    last_hash = digest
-                    await send_json({"type": "screen", **state})
+                async with change_signal(session) as wait:
+                    while True:
+                        session = await get_session(sid)
+                        if session is None:
+                            await send_json({"type": "gone"})
+                            return
+                        state = await read_lines(session)
+                        digest = hashlib.md5(
+                            json.dumps(state, sort_keys=True).encode()).hexdigest()
+                        if digest != last_hash:
+                            last_hash = digest
+                            await send_json({"type": "screen", **state})
+                        await wait()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 bridge.reset()
                 await send_json(error_payload(exc))
                 await asyncio.sleep(2)
-            await asyncio.sleep(POLL_SECONDS)
 
     async def stop_watcher():
         nonlocal watcher

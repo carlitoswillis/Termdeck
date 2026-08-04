@@ -128,8 +128,8 @@ They run against a fake iTerm2 layer, so no Mac or running iTerm2 is needed.
 
 - `server.py` — aiohttp server on port 7717.
   - `GET /api/sessions` — all iTerm2 windows/tabs/panes with titles/jobs/paths
-  - `GET /api/ws` — websocket: polls the watched session's last 400 lines
-    (scrollback + screen) every 400 ms, pushes on change; accepts
+  - `GET /api/ws` — websocket: pushes the watched session's last 400 lines
+    (scrollback + screen) whenever iTerm2 says the screen changed; accepts
     `{type:"input", text}` and `{type:"key", name}` to type into the session,
     and `{type:"activate"}` to bring it to the front on the Mac
   - `GET /api/scrollback` — older history for "Load earlier"
@@ -217,7 +217,18 @@ around. Turn it off and the phone becomes a pure read/write viewer that never
 disturbs the Mac; turning it back on brings the current session forward
 immediately, which doubles as a one-shot.
 
-Line reads return `{first, start, total, lines}`. iTerm2 numbers lines from the
+Updates are pushed, not polled: the server subscribes to iTerm2's screen-update
+notification and only re-reads when something actually changed, with a 5s
+safety re-read in case a notification goes missing and a fall back to 400ms
+polling if the subscription can't be set up at all. An idle session costs
+nothing, however many devices are watching it.
+
+Lines carry colour as style runs — `[cells, fg, bg, flags]`, where a colour is
+a 0-255 palette index, `#rrggbb`, or null for the terminal's default. Unstyled
+lines are left out of the payload. Terminal output is untrusted, so every
+segment is escaped on the way into the DOM.
+
+Line reads return `{first, start, total, cols, rows, lines, styles}`. iTerm2 numbers lines from the
 start of the session and drops the oldest once scrollback fills up, so `first`
 (its `overflow`) is the oldest line still available — not zero — and the UI
 stitches new frames onto its history by absolute line number, refetching
