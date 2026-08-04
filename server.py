@@ -7,10 +7,15 @@ Requires: iTerm2 with the Python API enabled
 
 Binds only to localhost and the Tailscale interface — never a public IP.
 """
+import argparse
 import asyncio
 import errno
 import hashlib
+import hmac
+import ipaddress
 import json
+import secrets
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +28,17 @@ TAIL_LINES = 400          # lines of scrollback kept in the live view
 POLL_SECONDS = 0.4        # screen poll interval per viewer
 REBIND_SECONDS = 30       # how often to recheck the Tailscale address
 STATIC = Path(__file__).parent / "static"
+TOKEN_FILE = Path(__file__).parent / ".termdeck-token"
+COOKIE = "termdeck"
+
+# Two locks, because binding to specific addresses is a property of how it
+# started, not a rule anything enforces. A subnet router, a port forward or a
+# reverse proxy in front could all widen the audience without touching a line
+# of this file.
+LOOPBACK_NETS = ["127.0.0.0/8", "::1/128"]
+TAILNET_NETS = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]    # Tailscale's range
+LAN_NETS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+            "169.254.0.0/16", "fd00::/8", "fe80::/10"]
 
 KEYMAP = {
     "enter": "\r",
@@ -239,10 +255,78 @@ def error_payload(exc):
     return {"type": "error", "message": msg, "hint": hint}
 
 
+# ------------------------------------------------------------------ gatekeeping
+
+def allowed_networks(allow_lan=False):
+    names = LOOPBACK_NETS + TAILNET_NETS + (LAN_NETS if allow_lan else [])
+    return [ipaddress.ip_network(n) for n in names]
+
+
+def peer_allowed(remote, nets):
+    """Is this source address one we're willing to serve?"""
+    if not remote:
+        return False
+    try:
+        ip = ipaddress.ip_address(remote)
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped          # ::ffff:100.1.2.3 is still a tailnet peer
+    return any(ip in net for net in nets)
+
+
+def load_token():
+    """Read the shared token, creating one on first run."""
+    if TOKEN_FILE.exists():
+        existing = TOKEN_FILE.read_text().strip()
+        if existing:
+            return existing
+    token = secrets.token_urlsafe(24)
+    TOKEN_FILE.write_text(token + "\n")
+    TOKEN_FILE.chmod(0o600)
+    return token
+
+
+UNAUTHORIZED = """<!doctype html><meta charset=utf-8>
+<title>termdeck</title>
+<body style="font:15px system-ui;background:#101114;color:#d6d7db;padding:2rem">
+<h1 style="font-size:17px">termdeck</h1>
+<p>This link needs the access token. Start termdeck and open the URL it
+prints, or run <code>cat .termdeck-token</code> on the Mac and visit
+<code>/?t=&lt;token&gt;</code>.</p>
+"""
+
+
+def make_guard(nets, token):
+    @web.middleware
+    async def guard(request, handler):
+        if not peer_allowed(request.remote, nets):
+            # Deliberately terse: nothing here confirms what's running.
+            return web.Response(status=403, text="forbidden\n")
+        if token is None or request.path == "/healthz":
+            return await handler(request)
+        supplied = request.query.get("t")
+        if supplied and hmac.compare_digest(supplied, token):
+            # Move it out of the URL so it stops riding along in history,
+            # bookmarks and the address bar. The fragment (#s=…) survives.
+            response = web.HTTPFound(request.path)
+            response.set_cookie(COOKIE, token, httponly=True, samesite="Strict",
+                                max_age=31536000, path="/")
+            raise response
+        if hmac.compare_digest(request.cookies.get(COOKIE, ""), token):
+            return await handler(request)
+        return web.Response(status=401, text=UNAUTHORIZED, content_type="text/html")
+    return guard
+
+
 # ---------------------------------------------------------------- HTTP routes
 
 async def index(_request):
     return web.FileResponse(STATIC / "index.html")
+
+
+async def healthz(_request):
+    return web.Response(text="ok\n")
 
 
 async def api_sessions(_request):
@@ -429,9 +513,10 @@ async def rebind_watcher(runner, sites):
             print(f"rebind failed: {exc}", file=sys.stderr, flush=True)
 
 
-def make_app():
-    app = web.Application()
+def make_app(token=None, allow_lan=False):
+    app = web.Application(middlewares=[make_guard(allowed_networks(allow_lan), token)])
     app.router.add_get("/", index)
+    app.router.add_get("/healthz", healthz)
     app.router.add_get("/api/sessions", api_sessions)
     app.router.add_get("/api/scrollback", api_scrollback)
     app.router.add_post("/api/new", api_new)
@@ -440,14 +525,43 @@ def make_app():
     return app
 
 
-async def main():
-    runner = web.AppRunner(make_app())
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="termdeck")
+    parser.add_argument("--lan", action="store_true",
+                        help="also serve this Mac's Wi-Fi address, not just Tailscale")
+    parser.add_argument("--no-auth", action="store_true",
+                        help="skip the access token (anyone who can reach the "
+                             "port gets a shell)")
+    return parser.parse_args(argv)
+
+
+def lan_ip():
+    """This Mac's address on the local network, if it has one."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("192.0.2.1", 9))       # reserved, no packets are sent
+        ip = sock.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        sock.close()
+    return None if ip.startswith(("127.", "100.")) else ip
+
+
+async def main(argv=None):
+    args = parse_args(argv)
+    token = None if args.no_auth else load_token()
+    runner = web.AppRunner(make_app(token, args.lan))
     await runner.setup()
 
     hosts = ["127.0.0.1"]
     ts_ip = tailscale_ip()
     if ts_ip:
         hosts.append(ts_ip)
+    if args.lan:
+        local = lan_ip()
+        if local:
+            hosts.append(local)
     sites, in_use = {}, False
     for host in hosts:
         try:
@@ -465,6 +579,16 @@ async def main():
     if not ts_ip:
         print("warning: no Tailscale IP found; will keep checking",
               file=sys.stderr, flush=True)
+    reach = "loopback + tailnet" + (" + LAN" if args.lan else "")
+    print(f"accepting connections from: {reach}", flush=True)
+    if token:
+        for host in sites:
+            print(f"open: http://{host}:{PORT}/?t={token}", flush=True)
+        print(f"(token also in {TOKEN_FILE.name}; the link only needs it once "
+              "per device)", flush=True)
+    else:
+        print("warning: --no-auth, so anything that can reach the port gets a "
+              "shell", file=sys.stderr, flush=True)
     await rebind_watcher(runner, sites)
 
 

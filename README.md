@@ -50,7 +50,29 @@ land in `logs/termdeck.log` and `logs/termdeck.err.log`.
 - On your phone (Tailscale on): http://100.72.206.61:7717
   (or http://<mac-tailscale-name>:7717 if MagicDNS is on)
 
-The server binds only to localhost and the Tailscale interface — never LAN/public.
+## Who can reach it
+
+Two locks, because "it only binds to these addresses" is a fact about how it
+started, not a rule anything enforces — a subnet router, a port forward or a
+proxy in front could all widen that without touching this code.
+
+- **Address allowlist.** Requests are refused unless they come from loopback
+  or the tailnet (`100.64.0.0/10`). `--lan` adds your Wi-Fi network and also
+  binds the Mac's LAN address, for reaching it without Tailscale. Nothing
+  binds a public address, ever.
+- **Access token.** Generated on first run into `.termdeck-token` (gitignored,
+  mode 600) and printed as a link at startup. Open that link once per device;
+  it hands the token to a `HttpOnly`, `SameSite=Strict` cookie and drops it
+  from the URL, so it stops riding along in history and bookmarks. Websockets
+  can't send an `Authorization` header, which is exactly why it's a cookie —
+  the handshake is refused without one.
+
+Only `/healthz` is unauthenticated, so the installer can check the port
+without holding the token. Run with `--no-auth` to turn the token off; then
+anything that can reach the port has a shell.
+
+Without this, every device on your tailnet could type into your terminal —
+including any node someone else shares in.
 
 ## Surviving sleep
 

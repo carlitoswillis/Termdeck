@@ -67,13 +67,17 @@ fi
 
 # ------------------------------------------------------------------- report in
 sleep 1
-if curl -sf -o /dev/null --max-time 3 http://127.0.0.1:7717/; then
+if curl -sf -o /dev/null --max-time 3 http://127.0.0.1:7717/healthz; then
+  # The token is only needed the first time a device connects; after that it
+  # rides in a cookie.
+  tok=""
+  [[ -f .termdeck-token ]] && tok="/?t=$(cat .termdeck-token)"
   echo "termdeck is running under $supervisor:"
-  echo "  http://localhost:7717"
+  echo "  http://localhost:7717$tok"
   for cli in tailscale /Applications/Tailscale.app/Contents/MacOS/Tailscale; do
     ip=$("$cli" ip -4 2>/dev/null | head -1) || true
     if [[ "$ip" == 100.* ]]; then
-      echo "  http://$ip:7717   (from your phone, with Tailscale on)"
+      echo "  http://$ip:7717$tok   (from your phone, with Tailscale on)"
       break
     fi
   done
