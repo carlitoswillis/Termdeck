@@ -40,12 +40,21 @@ PLAIN = FakeStyle()
 
 
 class FakeLine:
-    """iTerm2 hands back one shared CellStyle object per run, which is what
-    lets the server find run boundaries by identity."""
+    """A line as iTerm2 describes it: a list of cells, each holding zero or
+    more code points. `string` is only ever those code points joined up —
+    which is why a cell holding none vanishes from it entirely.
 
-    def __init__(self, string, styles=None):
-        self.string = string
-        self.styles = styles if styles is not None else [PLAIN] * len(string)
+    iTerm2 also hands back one shared CellStyle object per run, which is what
+    lets the server find run boundaries by identity.
+    """
+
+    def __init__(self, string, styles=None, cells=None):
+        self.cells = list(string) if cells is None else cells
+        self.string = "".join(self.cells)
+        self.styles = styles if styles is not None else [PLAIN] * len(self.cells)
+
+    def string_at(self, x):
+        return self.cells[x]           # IndexError past the end, as iTerm2 does
 
     def style_at(self, x):
         return self.styles[x] if 0 <= x < len(self.styles) else None

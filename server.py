@@ -22,6 +22,7 @@ import socket
 import subprocess
 import sys
 import traceback
+import unicodedata
 from pathlib import Path
 
 from aiohttp import web, WSMsgType
@@ -219,32 +220,73 @@ def encode_color(color):
 
 
 def encode_style(style):
+    if style is None:
+        return [None, None, 0]       # a cell nothing has written to
     flags = (BOLD if style.bold else 0) | (ITALIC if style.italic else 0) \
         | (UNDERLINE if style.underline else 0) | (INVERSE if style.inverse else 0) \
         | (FAINT if style.faint else 0) | (STRIKE if style.strikethrough else 0)
     return [encode_color(style.fg_color), encode_color(style.bg_color), flags]
 
 
-def line_runs(line):
-    """Style runs for one line as [cells, fg, bg, flags], or None if the whole
-    line is unstyled.
+def is_wide(ch):
+    return unicodedata.east_asian_width(ch) in ("W", "F")
 
-    iTerm2 hands back the *same* CellStyle object for every cell in a run, so
-    an identity check finds the run boundaries without comparing attributes.
+
+def rebuild_line(line):
+    """Rebuild one line from its cells, and its style runs alongside.
+
+    `LineContents.string` is nothing but every cell's code points joined up,
+    so a cell that was never written contributes *no characters at all*. A
+    line a TUI drew by positioning the cursor rather than printing spaces
+    therefore arrives with its gaps closed: "foo   bar" comes back "foobar".
+    Walking the cells puts the blanks back.
+
+    An empty cell is also how the second half of a double-width character is
+    described, and that one must not become a space or every CJK and emoji
+    line shifts right.
+
+    Run lengths come out in code units rather than cells, so they still line
+    up with the text where one cell holds two (a combining accent) or none.
     """
-    runs, current, count, x = [], None, 0, 0
+    pieces, runs = [], []
+    current, count, x = None, 0, 0
     while True:
-        style = line.style_at(x)
-        if style is None:
+        try:
+            piece = line.string_at(x)
+        except IndexError:
             break
+        if piece == "":
+            previous = pieces[-1] if pieces else ""
+            piece = "" if previous and is_wide(previous[-1]) else " "
+        style = line.style_at(x)
         if style is not current:
             if count:
                 runs.append([count] + encode_style(current))
             current, count = style, 0
-        count += 1
+        count += len(piece)
+        pieces.append(piece)
         x += 1
     if count:
         runs.append([count] + encode_style(current))
+
+    # Every unwritten cell to the right of the text just became a space.
+    text = "".join(pieces)
+    trimmed = text.rstrip()
+    if len(trimmed) < len(text):
+        kept, total = [], 0
+        for run in runs:
+            if total >= len(trimmed):
+                break
+            length = min(run[0], len(trimmed) - total)
+            kept.append([length] + run[1:])
+            total += length
+        runs, text = kept, trimmed
+    return text, runs
+
+
+def line_runs(line):
+    """Style runs for one line, or None when it's plain from end to end."""
+    runs = rebuild_line(line)[1]
     if len(runs) == 1 and runs[0][1:] == [None, None, 0]:
         return None          # plain text: don't pay to say so
     return runs or None
@@ -266,15 +308,17 @@ async def cursor_position(session):
 
 def line_payload(lines):
     """Text plus a sparse map of line index -> style runs."""
-    styles = {}
+    text, styles = [], {}
     for i, line in enumerate(lines):
         try:
-            runs = line_runs(line)
+            content, runs = rebuild_line(line)
         except Exception:
-            runs = None      # never let styling break the text
-        if runs:
+            # Whatever went wrong, the text still has to arrive.
+            content, runs = line.string, None
+        text.append(content)
+        if runs and not (len(runs) == 1 and runs[0][1:] == [None, None, 0]):
             styles[str(i)] = runs
-    return [l.string for l in lines], styles
+    return text, styles
 
 
 async def _read_lines(session, start, count):

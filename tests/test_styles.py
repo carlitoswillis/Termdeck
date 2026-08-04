@@ -4,6 +4,58 @@ from conftest import FakeColor, FakeLine, FakeStyle, PLAIN
 import server
 
 
+def test_cells_a_tui_never_wrote_come_back_as_spaces():
+    """The bug this exists to stop: iTerm2's line text is just the cells'
+    code points joined, so a gap a TUI left by moving the cursor instead of
+    printing spaces closed up — "foo   bar" arrived as "foobar"."""
+    line = FakeLine("", cells=["f", "o", "o", "", "", "", "b", "a", "r"])
+    assert line.string == "foobar"          # what we used to send
+
+    text, _ = server.line_payload([line])
+
+    assert text == ["foo   bar"]
+
+
+def test_the_second_half_of_a_wide_character_is_not_a_space():
+    """An empty cell also means 'the previous character is two wide'. Putting
+    a space there would shift every CJK and emoji line to the right."""
+    line = FakeLine("", cells=["世", "", "界", "", "!"])
+
+    text, _ = server.line_payload([line])
+
+    assert text == ["世界!"]
+
+
+def test_runs_are_measured_in_code_units_not_cells():
+    """One cell can hold several code points — e + a combining accent — and a
+    run length that counts cells would drift the colours along the line."""
+    red = FakeStyle(fg=FakeColor(standard=1))
+    line = FakeLine("", cells=["é", "x"], styles=[red, PLAIN])
+
+    text, styles = server.line_payload([line])
+
+    assert text == ["éx"]
+    assert styles["0"][0][0] == 2           # two code units, one cell
+
+
+def test_trailing_blank_cells_are_not_sent_as_spaces():
+    line = FakeLine("", cells=["h", "i"] + [""] * 70)
+
+    text, _ = server.line_payload([line])
+
+    assert text == ["hi"]
+
+
+def test_styles_survive_the_gaps_being_filled():
+    red = FakeStyle(fg=FakeColor(standard=1))
+    line = FakeLine("", cells=["a", "", "b"], styles=[red, None, red])
+
+    text, styles = server.line_payload([line])
+
+    assert text == ["a b"]
+    assert styles["0"] == [[1, 1, None, 0], [1, None, None, 0], [1, 1, None, 0]]
+
+
 def test_a_plain_line_carries_no_styles():
     assert server.line_runs(FakeLine("hello")) is None
 

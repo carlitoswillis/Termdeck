@@ -262,6 +262,15 @@ safety re-read in case a notification goes missing and a fall back to 400ms
 polling if the subscription can't be set up at all. An idle session costs
 nothing, however many devices are watching it.
 
+Lines are rebuilt cell by cell rather than taken from `LineContents.string`.
+That string is only every cell's code points joined together, so a cell that
+was never written contributes no characters at all — a line a TUI drew by
+moving the cursor instead of printing spaces arrives with its gaps closed up,
+`foo   bar` as `foobar`. An empty cell is also how the second half of a
+double-width character is described, so only the first kind gets a space put
+back. `tools/inspect-lines.py` prints what iTerm2 reports for the current
+session, cell by cell, when something still looks wrong.
+
 Lines carry colour as style runs — `[cells, fg, bg, flags]`, where a colour is
 a 0-255 palette index, `#rrggbb`, or null for the terminal's default. Unstyled
 lines are left out of the payload. Terminal output is untrusted, so every
