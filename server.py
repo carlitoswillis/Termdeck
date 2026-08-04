@@ -177,6 +177,67 @@ async def read_lines(session, start=None, count=TAIL_LINES):
         _read_lines(session, start, count)))
 
 
+BOLD, ITALIC, UNDERLINE, INVERSE, FAINT, STRIKE = 1, 2, 4, 8, 16, 32
+
+
+def encode_color(color):
+    """A colour the browser can use: 0-255 for the palette, #rrggbb for true
+    colour, None for 'whatever the terminal's default is'."""
+    if color is None:
+        return None
+    if color.is_rgb:
+        rgb = color.rgb
+        return f"#{rgb.red:02x}{rgb.green:02x}{rgb.blue:02x}"
+    if color.is_standard:
+        return color.standard
+    return None
+
+
+def encode_style(style):
+    flags = (BOLD if style.bold else 0) | (ITALIC if style.italic else 0) \
+        | (UNDERLINE if style.underline else 0) | (INVERSE if style.inverse else 0) \
+        | (FAINT if style.faint else 0) | (STRIKE if style.strikethrough else 0)
+    return [encode_color(style.fg_color), encode_color(style.bg_color), flags]
+
+
+def line_runs(line):
+    """Style runs for one line as [cells, fg, bg, flags], or None if the whole
+    line is unstyled.
+
+    iTerm2 hands back the *same* CellStyle object for every cell in a run, so
+    an identity check finds the run boundaries without comparing attributes.
+    """
+    runs, current, count, x = [], None, 0, 0
+    while True:
+        style = line.style_at(x)
+        if style is None:
+            break
+        if style is not current:
+            if count:
+                runs.append([count] + encode_style(current))
+            current, count = style, 0
+        count += 1
+        x += 1
+    if count:
+        runs.append([count] + encode_style(current))
+    if len(runs) == 1 and runs[0][1:] == [None, None, 0]:
+        return None          # plain text: don't pay to say so
+    return runs or None
+
+
+def line_payload(lines):
+    """Text plus a sparse map of line index -> style runs."""
+    styles = {}
+    for i, line in enumerate(lines):
+        try:
+            runs = line_runs(line)
+        except Exception:
+            runs = None      # never let styling break the text
+        if runs:
+            styles[str(i)] = runs
+    return [l.string for l in lines], styles
+
+
 async def _read_lines(session, start, count):
     conn = await bridge.connection()
     async with bridge.txn_lock:
@@ -192,13 +253,15 @@ async def _read_lines(session, start, count):
     # The pane's real width in cells, so the phone can size text to fit it
     # rather than guessing from the longest line it happens to have.
     grid = getattr(session, "grid_size", None)
+    text, styles = line_payload(lines)
     return {
         "first": first,
         "start": begin,
         "total": total,
         "cols": getattr(grid, "width", 0) or 0,
         "rows": getattr(grid, "height", 0) or 0,
-        "lines": [l.string for l in lines],
+        "lines": text,
+        "styles": styles,
     }
 
 
@@ -397,8 +460,7 @@ async def ws_handler(request):
                     return
                 state = await read_lines(session)
                 digest = hashlib.md5(
-                    ("\n".join(state["lines"]) + f'|{state["total"]}').encode()
-                ).hexdigest()
+                    json.dumps(state, sort_keys=True).encode()).hexdigest()
                 if digest != last_hash:
                     last_hash = digest
                     await send_json({"type": "screen", **state})

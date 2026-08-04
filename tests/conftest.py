@@ -18,9 +18,36 @@ class FakeLineInfo:
         self.mutable_area_height = screen
 
 
+class FakeColor:
+    def __init__(self, standard=None, rgb=None):
+        self.is_standard = standard is not None
+        self.is_rgb = rgb is not None
+        self.standard = standard
+        self.rgb = SimpleNamespace(red=rgb[0], green=rgb[1], blue=rgb[2]) if rgb else None
+
+
+class FakeStyle:
+    def __init__(self, fg=None, bg=None, **flags):
+        self.fg_color = fg
+        self.bg_color = bg
+        for name in ("bold", "italic", "underline", "inverse", "faint",
+                     "strikethrough"):
+            setattr(self, name, flags.get(name, False))
+
+
+PLAIN = FakeStyle()
+
+
 class FakeLine:
-    def __init__(self, string):
+    """iTerm2 hands back one shared CellStyle object per run, which is what
+    lets the server find run boundaries by identity."""
+
+    def __init__(self, string, styles=None):
         self.string = string
+        self.styles = styles if styles is not None else [PLAIN] * len(string)
+
+    def style_at(self, x):
+        return self.styles[x] if 0 <= x < len(self.styles) else None
 
 
 class FakeSession:
@@ -37,6 +64,7 @@ class FakeSession:
         self.requests = []
         self.activations = []
         self.activate_error = None
+        self.line_styles = None       # tests can hand back per-line styles
 
     async def async_get_line_info(self):
         return self.info
@@ -48,7 +76,8 @@ class FakeSession:
         # iTerm2 returns a subset when the range runs past what it still has.
         lo = max(first_line, first)
         hi = min(first_line + number_of_lines, total)
-        return [FakeLine(f"line {n}") for n in range(lo, max(lo, hi))]
+        return [FakeLine(f"line {n}", self.line_styles(n) if self.line_styles else None)
+                for n in range(lo, max(lo, hi))]
 
     async def async_get_variable(self, name):
         return {"jobName": "zsh", "path": "/Users/x/work", "tty": "/dev/ttys001",

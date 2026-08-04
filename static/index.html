@@ -433,6 +433,64 @@ function connect() {
     setTimeout(connect, 1500);
   };
 }
+/* ---------------- colour ----------------
+   Runs arrive as [cells, fg, bg, flags]; fg/bg are a 0-255 palette index, a
+   "#rrggbb" string, or null for the terminal's default. */
+const ANSI16 = ["#2e3436","#cc0000","#4e9a06","#c4a000","#3465a4","#75507b",
+                "#06989a","#d3d7cf","#555753","#ef2929","#8ae234","#fce94f",
+                "#729fcf","#ad7fa8","#34e2e2","#eeeeec"];
+const CUBE = [0, 95, 135, 175, 215, 255];
+const DEFAULT_FG = "#cfd1d6", DEFAULT_BG = "#0b0c0e";
+const B_BOLD = 1, B_ITALIC = 2, B_UNDERLINE = 4, B_INVERSE = 8, B_FAINT = 16,
+      B_STRIKE = 32;
+
+function colorOf(c) {
+  if (c === null || c === undefined) return null;
+  if (typeof c === "string") return c;
+  if (c < 16) return ANSI16[c];
+  if (c < 232) {
+    const i = c - 16;
+    return `rgb(${CUBE[(i / 36 | 0) % 6]},${CUBE[(i / 6 | 0) % 6]},${CUBE[i % 6]})`;
+  }
+  const g = 8 + (c - 232) * 10;
+  return `rgb(${g},${g},${g})`;
+}
+const esc = s => s.replace(/[&<>]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"}[c]));
+
+function segmentHTML(text, fg, bg, flags) {
+  let color = colorOf(fg), background = colorOf(bg);
+  if (flags & B_INVERSE) {
+    const swap = color || DEFAULT_FG;
+    color = background || DEFAULT_BG;
+    background = swap;
+  }
+  const css = [], lines = [];
+  if (color) css.push("color:" + color);
+  if (background) css.push("background:" + background);
+  if (flags & B_BOLD) css.push("font-weight:600");
+  if (flags & B_ITALIC) css.push("font-style:italic");
+  if (flags & B_UNDERLINE) lines.push("underline");
+  if (flags & B_STRIKE) lines.push("line-through");
+  if (lines.length) css.push("text-decoration:" + lines.join(" "));
+  if (flags & B_FAINT) css.push("opacity:.65");
+  return css.length ? `<span style="${css.join(";")}">${esc(text)}</span>` : esc(text);
+}
+function rowHTML(row) {
+  if (!row.r) return esc(row.t);
+  let out = "", at = 0;
+  for (const [cells, fg, bg, flags] of row.r) {
+    const seg = row.t.slice(at, at + cells);
+    at += cells;
+    if (seg) out += segmentHTML(seg, fg, bg, flags);
+  }
+  return out + (at < row.t.length ? esc(row.t.slice(at)) : "");
+}
+/* One frame's lines as rows: text plus its style runs, if it has any. */
+function rowsOf(m) {
+  const styles = m.styles || {};
+  return m.lines.map((t, i) => ({t, r: styles[i] || null}));
+}
+
 /* Frames arrive faster than a gap-fill fetch completes, so apply them one at
    a time and only ever keep the newest one waiting. */
 function drain() {
@@ -459,17 +517,17 @@ async function applyFrame(m) {
     const gap = m.start - histEnd;
     const filled = gap <= MAX_GAP ? await fetchRange(histEnd, gap) : null;
     if (filled && filled.start === histEnd && filled.lines.length === gap) {
-      hist = hist.concat(filled.lines);
+      hist = hist.concat(rowsOf(filled));
     } else {
       hist = [];   // can't stitch — fall back to showing just the live tail
     }
   }
   if (!hist.length || m.start < histStart) {
-    hist = m.lines.slice();
+    hist = rowsOf(m);
     histStart = m.start;
   } else {
     hist.length = m.start - histStart;
-    hist = hist.concat(m.lines);
+    hist = hist.concat(rowsOf(m));
   }
   if (hist.length > MAX_HISTORY) {
     histStart += hist.length - MAX_HISTORY;
@@ -491,7 +549,7 @@ async function fetchRange(start, count) {
 function updateScreen() {
   const wrap = $("screen-wrap");
   const pinned = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 60;
-  $("screen").textContent = hist.join("\n");
+  $("screen").innerHTML = hist.map(rowHTML).join("\n");
   $("load-earlier").style.display = histStart > firstLine ? "block" : "none";
   if (pinned) wrap.scrollTop = wrap.scrollHeight;
 }
@@ -505,7 +563,7 @@ async function loadEarlier() {
     if (data && data.lines.length &&
         data.start + data.lines.length === histStart) {
       const wrap = $("screen-wrap"), before = wrap.scrollHeight;
-      hist = data.lines.concat(hist);
+      hist = rowsOf(data).concat(hist);
       histStart = data.start;
       firstLine = data.first || 0;
       updateScreen();
