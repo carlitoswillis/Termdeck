@@ -175,6 +175,7 @@
   .dot.new { background: var(--accent); }
   .dot.done { background: #6cc46c; }
   .dot.busy { background: #c9a227; }
+  .gap { color: #7a6a3a; font-style: italic; }
   #status {
     flex: none;
     font-size: 11px;
@@ -280,7 +281,7 @@ let ws = null, currentId = null, currentTitle = "", lastId = null;
 const titles = {};        // session id -> title, for resolving a deep link
 /* `hist` holds the lines we currently display; `histStart` is the iTerm2
    line number of hist[0], and `firstLine` the oldest line iTerm2 still has. */
-let hist = [], histStart = 0, firstLine = 0, totalLines = 0;
+let hist = [], histStart = 0, histEnd = 0, firstLine = 0, totalLines = 0;
 let pendingFrame = null, applying = false, loading = false;
 let follow = localStorage.getItem("follow") !== "0";   // on unless turned off
 let fit = localStorage.getItem("fit") === "1";
@@ -429,7 +430,8 @@ function openSession(id, title, push = true) {
   if (push) pushSession(id);
   document.title = title + " · termdeck";
   currentId = id; currentTitle = title; lastId = id;
-  hist = []; histStart = 0; firstLine = 0; totalLines = 0; pendingFrame = null;
+  hist = []; histStart = 0; histEnd = 0; firstLine = 0; totalLines = 0;
+  pendingFrame = null;
   pendingActivate = follow;   // only on a deliberate open, never on reconnect
   paneCols = 0; paneRows = 0; reshaped = false; cursor = null;
   finished[id] = false;
@@ -534,6 +536,10 @@ const cursorHTML = ch => `<span class="cursor">${esc(ch || " ")}</span>`;
    into whatever run covers it, so styling and the cursor coexist. */
 function rowHTML(row, col = -1) {
   const text = row.t;
+  if (row.marker) {
+    return `<span class="gap"${row.from !== undefined ? ` data-from="${row.from}"` : ""}>` +
+           `${esc(text)}</span>`;
+  }
   if (!row.r) {
     if (col < 0) return esc(text);
     return esc(text.slice(0, col)) + cursorHTML(text[col]) +
@@ -562,10 +568,12 @@ function rowHTML(row, col = -1) {
   }
   return out;
 }
-/* One frame's lines as rows: text plus its style runs, if it has any. */
+/* One frame's lines as rows: text, its style runs if it has any, and the
+   absolute line number — carrying `n` on every row is what lets history be
+   stitched without ever having to guess from array positions. */
 function rowsOf(m) {
   const styles = m.styles || {};
-  return m.lines.map((t, i) => ({t, r: styles[i] || null}));
+  return m.lines.map((t, i) => ({t, r: styles[i] || null, n: m.start + i}));
 }
 
 /* Frames arrive faster than a gap-fill fetch completes, so apply them one at
@@ -592,31 +600,88 @@ async function applyFrame(m) {
   if (m.cols && m.cols !== cols) { cols = m.cols; applyFit(); }
   // Remember the shape the pane had before we touched it.
   if (m.cols && !paneCols && !reshaped) { paneCols = m.cols; paneRows = m.rows; }
-  const histEnd = histStart + hist.length;
-  if (hist.length && m.start > histEnd) {
-    // Output scrolled past the tail window since the last frame; fetch what
-    // we missed so the scrollback stays continuous.
-    const gap = m.start - histEnd;
-    const filled = gap <= MAX_GAP ? await fetchRange(histEnd, gap) : null;
-    if (filled && filled.start === histEnd && filled.lines.length === gap) {
-      hist = hist.concat(rowsOf(filled));
-    } else {
-      hist = [];   // can't stitch — fall back to showing just the live tail
+
+  const arriving = rowsOf(m);
+  if (!hist.length) {
+    hist = arriving;
+  } else if (m.start > histEnd) {
+    // More scrolled past than one frame carries. Fetch what we missed —
+    // and if any of it can't be recovered, say so on screen. Dropping the
+    // scrollback to paper over a gap is how text goes missing.
+    const missing = m.start - histEnd;
+    const want = Math.min(missing, MAX_GAP);
+    const filled = await fetchRange(m.start - want, want);
+    if (filled && filled.lines.length) {
+      const recovered = rowsOf(filled);
+      noteGap(recovered[0].n - histEnd);
+      hist = hist.concat(recovered);
+      renumber();          // histEnd now covers what came back
     }
-  }
-  if (!hist.length || m.start < histStart) {
-    hist = rowsOf(m);
-    histStart = m.start;
+    noteGap(m.start - histEnd);
+    hist = hist.concat(arriving);
+  } else if (m.start < histStart) {
+    // Renumbered under us — a resize rewraps every line — so what we were
+    // holding no longer lines up with anything.
+    hist = arriving;
   } else {
-    hist.length = m.start - histStart;
-    hist = hist.concat(rowsOf(m));
+    truncateFrom(m.start);
+    hist = hist.concat(arriving);
   }
+  renumber();
+
   if (hist.length > MAX_HISTORY) {
-    histStart += hist.length - MAX_HISTORY;
     hist = hist.slice(-MAX_HISTORY);
+    renumber();
   }
   updateScreen();
   $("status").textContent = `${currentTitle} · ${totalLines} lines`;
+}
+/* A visible placeholder beats a silent hole, and beats wiping the screen —
+   and this one can be tapped to go and fetch what it stands for. */
+function gapRow(from, count) {
+  return {marker: true, n: from, from, count,
+          t: `⋯ tap to load ${count.toLocaleString()} lines ⋯`};
+}
+function noteGap(count) {
+  if (count > 0) hist.push(gapRow(histEnd, count));
+}
+async function fillGap(from) {
+  const at = hist.findIndex(r => r.marker && r.from === from);
+  if (at < 0 || loading) return;
+  loading = true;
+  hist[at].t = "⋯ loading ⋯";
+  updateScreen();
+  try {
+    const gap = hist[at].count;
+    const want = Math.min(gap, MAX_GAP);
+    // Fetch the newest end of the gap: it's the part you were reading towards.
+    const data = await fetchRange(from + gap - want, want);
+    const rows = data && data.lines.length ? rowsOf(data) : [];
+    const missing = rows.length ? rows[0].n - from : gap;
+    hist.splice(at, 1, ...(missing > 0 ? [gapRow(from, missing)] : []), ...rows);
+    renumber();
+  } finally {
+    loading = false;
+    const still = hist.find(r => r.marker && r.from === from);
+    if (still) still.t = `⋯ tap to load ${still.count.toLocaleString()} lines ⋯`;
+    updateScreen();
+  }
+}
+function truncateFrom(n) {
+  let cut = hist.length;
+  while (cut > 0 && (hist[cut - 1].marker || hist[cut - 1].n >= n)) cut--;
+  hist.length = cut;
+}
+/* histStart/histEnd bracket the real lines held; markers sit between them
+   without occupying a line number. */
+function renumber() {
+  histStart = histEnd = 0;
+  for (let i = 0; i < hist.length; i++) {
+    if (!hist[i].marker) { histStart = hist[i].n; break; }
+  }
+  for (let i = hist.length - 1; i >= 0; i--) {
+    if (!hist[i].marker) { histEnd = hist[i].n + 1; break; }
+  }
 }
 async function fetchRange(start, count) {
   if (!currentId || count <= 0) return null;
@@ -631,8 +696,8 @@ async function fetchRange(start, count) {
 function updateScreen() {
   const wrap = $("screen-wrap");
   const pinned = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 60;
-  $("screen").innerHTML = hist.map((row, i) => rowHTML(
-    row, cursor && cursor[0] === histStart + i ? cursor[1] : -1)).join("\n");
+  $("screen").innerHTML = hist.map(row => rowHTML(
+    row, cursor && !row.marker && cursor[0] === row.n ? cursor[1] : -1)).join("\n");
   $("load-earlier").style.display = histStart > firstLine ? "block" : "none";
   if (pinned) wrap.scrollTop = wrap.scrollHeight;
 }
@@ -643,12 +708,14 @@ async function loadEarlier() {
   try {
     const count = Math.min(CHUNK, histStart - firstLine);
     const data = await fetchRange(histStart - count, count);
-    if (data && data.lines.length &&
-        data.start + data.lines.length === histStart) {
+    if (data && data.lines.length) {
       const wrap = $("screen-wrap"), before = wrap.scrollHeight;
-      hist = rowsOf(data).concat(hist);
-      histStart = data.start;
+      const older = rowsOf(data);
+      const lastOlder = older[older.length - 1].n + 1;
+      const short = histStart - lastOlder;
+      hist = older.concat(short > 0 ? [gapRow(lastOlder, short)] : [], hist);
       firstLine = data.first || 0;
+      renumber();
       updateScreen();
       wrap.scrollTop += wrap.scrollHeight - before;   // keep the view in place
     }
@@ -775,6 +842,10 @@ $("input").addEventListener("keydown", e => {
   }
 });
 $("load-earlier").onclick = loadEarlier;
+$("screen").addEventListener("click", e => {
+  const gap = e.target.closest(".gap");
+  if (gap && gap.dataset.from !== undefined) fillGap(+gap.dataset.from);
+});
 function setFont(size, persist = true) {
   fontSize = Math.min(20, Math.max(6, size));
   $("screen").style.fontSize = fontSize + "px";

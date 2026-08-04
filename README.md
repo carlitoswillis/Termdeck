@@ -210,6 +210,22 @@ at a comfortable size for reading logs, where line breaks don't matter.
 Pinch-zoom is enabled too — the fastest way to read one dense corner without
 changing any setting.
 
+## Not losing text
+
+Frames carry the last 400 lines. Anything noisier than that — a build, an
+agent working — scrolls further between frames, and the missing stretch is
+fetched separately. When that can't be completed the view keeps everything it
+already had and marks the hole: **⋯ tap to load 3,600 lines ⋯**, which fetches
+that range on demand. Every row carries its absolute line number, so history
+is stitched by number rather than by array position, and nothing is ever
+dropped to make the arithmetic work.
+
+If lines are missing on the phone that you can't find on the Mac either, the
+cause is upstream: check **iTerm2 → Settings → Profiles → Terminal → Scrollback
+lines**. The default is only 1000, and a busy session blows past it in
+seconds — those lines are gone from iTerm2 itself, and nothing here can bring
+them back. "Unlimited scrollback" fixes it at the source.
+
 ## Knowing which pane needs you
 
 With several panes running, the question isn't what exists, it's which one
