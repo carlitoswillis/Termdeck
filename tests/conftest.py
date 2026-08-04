@@ -83,6 +83,7 @@ class FakeSession:
         self.cursor = (0, 0)          # (x, y), y relative to the screen top
         self.cursor_error = None
         self.closed = None
+        self.rename_error = None
 
     async def async_get_line_info(self):
         return self.info
@@ -131,6 +132,11 @@ class FakeSession:
 
     async def async_close(self, force=False):
         self.closed = force
+
+    async def async_set_name(self, name):
+        if self.rename_error:
+            raise self.rename_error
+        self.name = name
 
 
 class FakeStreamer:

@@ -32,7 +32,7 @@ PORT = 7717
 # Bumped whenever the browser needs a server that has caught up. The page
 # checks it and says so, because "pull, but the process is still the old one"
 # is invisible otherwise: static files are read per request, Python isn't.
-VERSION = 14
+VERSION = 15
 TAIL_LINES = 400          # lines of scrollback kept in the live view
 POLL_SECONDS = 0.4        # fallback poll interval, when iTerm2 won't push
 IDLE_SECONDS = 5          # re-read anyway, in case a notification went missing
@@ -766,6 +766,62 @@ async def api_close(request):
         return web.json_response(error_payload(exc), status=502)
 
 
+async def api_rename(request):
+    """Name a session. Six tabs all called "shell" is not a list."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    name = data.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return web.json_response({"message": "a name is required"}, status=400)
+    try:
+        session = await get_session(data.get("session_id", ""))
+        if session is None:
+            return web.json_response({"message": "session gone"}, status=404)
+        await session.async_set_name(name.strip()[:120])
+        return web.json_response({"title": name.strip()[:120]})
+    except Exception as exc:
+        log_error("renaming a session", exc)
+        return web.json_response(error_payload(exc), status=502)
+
+
+async def api_search(request):
+    """Find text anywhere in a session's history, not just the part the phone
+    has loaded. Reads in chunks so a long buffer doesn't arrive at once."""
+    session_id = request.query.get("session_id")
+    needle = request.query.get("q", "")
+    if not needle:
+        return web.json_response({"message": "nothing to search for"},
+                                 status=400)
+    session = await get_session(session_id) if session_id else None
+    if session is None:
+        return web.json_response({"message": "session gone"}, status=404)
+    limit = min(int(request.query.get("limit", 200) or 200), 500)
+    lowered = needle.lower()
+    hits = []
+    try:
+        info = await session.async_get_line_info()
+        first = info.overflow
+        total = (first + info.scrollback_buffer_height
+                 + info.mutable_area_height)
+        # Newest first: what you're looking for is usually near the end.
+        end = total
+        while end > first and len(hits) < limit:
+            start = max(first, end - 2000)
+            state = await read_lines(session, start, end - start)
+            for offset, text in enumerate(state["lines"]):
+                if lowered in text.lower():
+                    hits.append({"n": state["start"] + offset, "text": text})
+            end = start
+        hits.sort(key=lambda hit: hit["n"])
+        return web.json_response({"hits": hits[-limit:], "total": total,
+                                  "first": first})
+    except Exception as exc:
+        log_error("searching", exc)
+        return web.json_response(error_payload(exc), status=502)
+
+
 async def api_cells(request):
     """A cell-by-cell dump of the last few lines, as plain text.
 
@@ -903,8 +959,8 @@ async def api_scrollback(request):
 async def ws_handler(request):
     ws = web.WebSocketResponse(heartbeat=30)
     await ws.prepare(request)
-    session_id = None
-    watcher = None
+    session_id = None            # where typing goes
+    watchers = {}                # session id -> task feeding frames
     # Panes this viewer reshaped, and the size they had before, so the Mac
     # goes back to normal when the phone goes away.
     reshaped = {}
@@ -915,26 +971,27 @@ async def ws_handler(request):
         except Exception:
             pass
 
-    async def watch_loop(sid):
+    async def watch_loop(sid, count):
         last_state = None
         while True:
             try:
                 session = await get_session(sid)
                 if session is None:
-                    await send_json({"type": "gone"})
+                    await send_json({"type": "gone", "session_id": sid})
                     return
                 async with change_signal(session) as wait:
                     while True:
                         session = await get_session(sid)
                         if session is None:
-                            await send_json({"type": "gone"})
+                            await send_json({"type": "gone", "session_id": sid})
                             return
-                        state = await read_lines(session)
+                        state = await read_lines(session, count=count)
                         # Comparing the payloads directly beats hashing them:
                         # no serialising a screenful of text twice a frame.
                         if state != last_state:
                             last_state = state
-                            await send_json({"type": "screen", **state})
+                            await send_json({"type": "screen",
+                                             "session_id": sid, **state})
                         # iTerm2 notifies on every screen change, which during
                         # heavy output is dozens a second — far more than a
                         # phone can show, and each read costs real work.
@@ -948,53 +1005,64 @@ async def ws_handler(request):
                 await send_json(error_payload(exc))
                 await asyncio.sleep(2)
 
-    async def stop_watcher():
-        nonlocal watcher
-        if watcher:
-            watcher.cancel()
+    async def stop_watchers(keep=()):
+        """`keep` is (session id, line count) pairs — a watcher feeding 15
+        lines to a tile is no use to a full view that wants 400."""
+        for sid in [s for s in watchers if (s, watchers[s][1]) not in keep]:
+            task, _ = watchers.pop(sid)
+            task.cancel()
             try:
-                await watcher
+                await task
             except (asyncio.CancelledError, Exception):
                 pass
-            watcher = None
 
-    async def needed_session():
-        session = await get_session(session_id)
+    async def needed_session(sid):
+        session = await get_session(sid)
         if session is None:
-            await send_json({"type": "gone"})
+            await send_json({"type": "gone", "session_id": sid})
         return session
 
     async def handle(data):
-        nonlocal session_id, watcher
+        nonlocal session_id
         kind = data.get("type")
         if kind == "watch":
-            await stop_watcher()
-            session_id = data.get("session_id")
-            if session_id:
-                watcher = asyncio.create_task(watch_loop(session_id))
-        elif not session_id:
+            # One session (the terminal view) or several (the tiled view).
+            wanted = data.get("session_ids")
+            if not isinstance(wanted, list):
+                wanted = [data["session_id"]] if data.get("session_id") else []
+            wanted = [w for w in wanted if isinstance(w, str)][:12]
+            count = min(int(data.get("lines") or TAIL_LINES), TAIL_LINES)
+            session_id = wanted[0] if len(wanted) == 1 else None
+            await stop_watchers(keep=[(sid, count) for sid in wanted])
+            for sid in wanted:
+                if sid not in watchers:
+                    watchers[sid] = (asyncio.create_task(watch_loop(sid, count)),
+                                     count)
+            return
+        target = data.get("session_id") or session_id
+        if not target:
             return                      # nothing to talk to yet
-        elif kind in ("input", "key"):
+        if kind in ("input", "key"):
             text = (data.get("text", "") if kind == "input"
                     else KEYMAP.get(data.get("name", ""), ""))
             if not isinstance(text, str) or not text:
                 return
-            session = await get_session(session_id)
+            session = await get_session(target)
             if session:
                 await session.async_send_text(text)
         elif kind == "resize":
-            session = await needed_session()
+            session = await needed_session(target)
             if session:
                 grid = getattr(session, "grid_size", None)
-                if session_id not in reshaped and grid:
-                    reshaped[session_id] = (grid.width, grid.height)
+                if target not in reshaped and grid:
+                    reshaped[target] = (grid.width, grid.height)
                 await resize_session(session, data.get("cols", 80),
                                      data.get("rows", 24))
         elif kind == "activate":
-            session = await needed_session()
+            session = await needed_session(target)
             if session:
                 await activate_session(session)
-                await send_json({"type": "activated"})
+                await send_json({"type": "activated", "session_id": target})
 
     try:
         async for msg in ws:
@@ -1014,7 +1082,7 @@ async def ws_handler(request):
                 log_error("websocket message", exc)
                 await send_json(error_payload(exc))
     finally:
-        await stop_watcher()
+        await stop_watchers()
         # Put the Mac back the way it was, even if the phone just went into a
         # tunnel — leaving someone's pane 51 columns wide is not on.
         for sid, (cols, rows) in reshaped.items():
@@ -1087,6 +1155,8 @@ def make_app(password=None, allow_lan=False, secret="test-secret"):
     app.router.add_get("/api/cells", api_cells)
     app.router.add_post("/api/new", api_new)
     app.router.add_post("/api/close", api_close)
+    app.router.add_post("/api/rename", api_rename)
+    app.router.add_get("/api/search", api_search)
     app.router.add_get("/api/ws", ws_handler)
     app.router.add_static("/static", STATIC)
     return app

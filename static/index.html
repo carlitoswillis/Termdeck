@@ -210,6 +210,53 @@
   .dot.done { background: #6cc46c; }
   .dot.busy { background: #c9a227; }
   .gap { color: #7a6a3a; font-style: italic; }
+  #tiles-view {
+    display: none;
+    max-width: 900px;
+    margin: 0 auto;
+    padding: calc(10px + env(safe-area-inset-top)) 12px
+             calc(24px + env(safe-area-inset-bottom));
+  }
+  #tiles-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  #tiles-title { font-size: 15px; font-weight: 600; }
+  #tiles { display: grid; gap: 10px; grid-template-columns: 1fr; }
+  @media (min-width: 700px) { #tiles { grid-template-columns: 1fr 1fr; } }
+  .tile {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    overflow: hidden;
+  }
+  .tile header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .tile header .where { color: var(--dim); font-weight: 400; font-size: 11px; }
+  .tile pre {
+    font-family: var(--mono);
+    font-size: 10px;
+    line-height: 1.3;
+    padding: 6px 9px 9px;
+    white-space: pre;
+    overflow-x: auto;
+    color: #cfd1d6;
+    min-height: 90px;
+  }
+  #find-bar { flex: none; display: flex; gap: 6px; padding: 7px 10px;
+              border-bottom: 1px solid var(--border); }
+  #find-bar input {
+    flex: 1; min-width: 0; font: 16px var(--mono); color: var(--text);
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 7px; padding: 7px 10px; outline: none;
+  }
+  #find-bar button { padding: 5px 10px; font-size: 13px; }
+  mark { background: #6b5a1e; color: #fdf0c0; }
+  mark.here { background: var(--accent); color: #101114; }
   #status {
     flex: none;
     font-size: 11px;
@@ -263,9 +310,18 @@
   <h1>termdeck <small id="list-status"></small></h1>
   <div id="banner" hidden></div>
   <div id="list-actions">
+    <button id="tiles-open">▦ All at once</button>
     <button id="new-window">+ Window</button>
   </div>
   <div id="list"></div>
+</div>
+
+<div id="tiles-view">
+  <div id="tiles-bar">
+    <button id="tiles-back">‹ Back</button>
+    <div id="tiles-title">All sessions</div>
+  </div>
+  <div id="tiles"></div>
 </div>
 
 <div id="term-view">
@@ -275,9 +331,17 @@
     <button id="follow" title="Bring this session to the front on the Mac">⤒</button>
     <button id="fit" title="Size the text so the pane's full width fits">⤢</button>
     <button id="reshape" title="Reshape the pane on the Mac to fit this screen">⇲</button>
+    <button id="find-open" title="Find in this session">⌕</button>
     <button id="font-minus">A−</button>
     <button id="font-plus">A+</button>
     <button id="wrap-toggle">Wrap</button>
+  </div>
+  <div id="find-bar" hidden>
+    <input id="find" type="search" autocomplete="off" autocorrect="off"
+           autocapitalize="off" spellcheck="false" placeholder="Find in session">
+    <button id="find-prev">↑</button>
+    <button id="find-next">↓</button>
+    <button id="find-close">✕</button>
   </div>
   <div id="screen-wrap">
     <button id="load-earlier">Load earlier</button>
@@ -307,7 +371,7 @@ const KEYS = [
 ];
 const SENTINEL = "⁣";   // invisible, but something Backspace can delete
 
-const NEEDS_VERSION = 14;   // keep in step with VERSION in server.py
+const NEEDS_VERSION = 15;   // keep in step with VERSION in server.py
 const CHUNK = 400;        // lines per "Load earlier" request
 const MAX_GAP = 5000;     // bigger gaps aren't worth stitching back together
 const MAX_HISTORY = 20000;// keep the DOM from growing without bound
@@ -462,6 +526,12 @@ function render(windows) {
            s.tty.replace("/dev/", "")].filter(Boolean).join(" · ");
         open.onclick = () => openSession(s.id, s.title);
 
+        const rename = document.createElement("button");
+        rename.className = "close";
+        rename.textContent = "✎";
+        rename.title = "Rename this session";
+        rename.onclick = () => renameSession(s.id, s.title);
+
         const shutTab = document.createElement("button");
         shutTab.className = "close";
         shutTab.textContent = "✕";
@@ -469,7 +539,7 @@ function render(windows) {
         shutTab.onclick = () => closeThing("session", s.id,
           `Close “${s.title}”${s.busy ? ` — ${s.job} is still running` : ""}?`);
 
-        card.append(open, shutTab);
+        card.append(open, rename, shutTab);
         frag.appendChild(card);
       });
     });
@@ -481,6 +551,45 @@ function render(windows) {
     frag.appendChild(n);
   }
   $("list").replaceChildren(frag);
+}
+
+/* navigator.clipboard needs a secure context, which http://100.x isn't, so
+   fall back to the old selection trick — which is what actually works on
+   iOS Safari over plain HTTP. */
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) { /* fall through */ }
+  const pad = document.createElement("textarea");
+  pad.value = text;
+  pad.setAttribute("readonly", "");
+  pad.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+  document.body.appendChild(pad);
+  pad.select();
+  pad.setSelectionRange(0, text.length);      // iOS needs the explicit range
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  pad.remove();
+  return ok;
+}
+async function renameSession(id, was) {
+  const name = prompt("Name this session", was || "");
+  if (name === null || !name.trim()) return;
+  try {
+    const r = await fetch("/api/rename", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({session_id: id, name}),
+    });
+    banner(r.ok ? "" : (await readBody(r)).message);
+  } catch (e) {
+    banner(String(e));
+  }
+  listSignature = "";        // the name changed, so force a redraw
+  refreshList();
 }
 
 async function closeThing(kind, id, question) {
@@ -516,6 +625,100 @@ async function createSession(kind, windowId, btn) {
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+
+/* ---------------- all sessions at once ----------------
+   Six agents running means the question is "what is everyone doing", and
+   answering it by opening each in turn is the thing this view removes. */
+const TILE_LINES = 16;
+let tiling = false, tileOrder = [];
+
+function openTiles() {
+  tiling = true;
+  currentId = null;
+  clearInterval(listTimer);
+  $("list-view").style.display = "none";
+  $("term-view").style.display = "none";
+  $("tiles-view").style.display = "block";
+  document.title = "All sessions · termdeck";
+  refreshTiles();
+  listTimer = setInterval(refreshTiles, 5000);   // catch new/closed sessions
+}
+function closeTiles() {
+  tiling = false;
+  tileOrder = [];
+  if (ws) { ws.onclose = null; ws.close(); ws = null; }
+  $("tiles-view").style.display = "none";
+  $("list-view").style.display = "block";
+  clearInterval(listTimer);
+  refreshList();
+  listTimer = setInterval(refreshList, 5000);
+}
+async function refreshTiles() {
+  const r = await fetch("/api/sessions");
+  const data = await readBody(r);
+  if (!r.ok) { banner(data.message); return; }
+  const found = [];
+  (data.windows || []).forEach(w => w.tabs.forEach(t => t.sessions.forEach(s => {
+    titles[s.id] = s.title;
+    found.push({...s, where: `Window ${w.index + 1} · Tab ${t.index + 1}`});
+  })));
+  const ids = found.map(s => s.id).join(",");
+  if (ids !== tileOrder.join(",")) {
+    tileOrder = found.map(s => s.id);
+    layoutTiles(found);
+    connectTiles();
+  } else {
+    found.forEach(s => {
+      const head = document.querySelector(`[data-tile="${CSS.escape(s.id)}"] .name`);
+      if (head) head.textContent = s.title;
+    });
+  }
+}
+function layoutTiles(sessions) {
+  const frag = document.createDocumentFragment();
+  sessions.forEach(s => {
+    const tile = document.createElement("div");
+    tile.className = "tile";
+    tile.dataset.tile = s.id;
+    const head = document.createElement("header");
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = s.title;
+    const where = document.createElement("span");
+    where.className = "where";
+    where.textContent = s.where;
+    const open = document.createElement("button");
+    open.textContent = "Open";
+    open.onclick = () => { closeTilesInto(s.id, s.title); };
+    head.append(name, where, open);
+    const pre = document.createElement("pre");
+    pre.textContent = "…";
+    tile.append(head, pre);
+    frag.appendChild(tile);
+  });
+  $("tiles").replaceChildren(frag);
+}
+function closeTilesInto(id, title) {
+  tiling = false;
+  clearInterval(listTimer);
+  $("tiles-view").style.display = "none";
+  openSession(id, title);
+}
+function connectTiles() {
+  if (ws) { ws.onclose = null; ws.close(); ws = null; }
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/api/ws`);
+  ws.onopen = () => ws.send(JSON.stringify({type: "watch",
+                                            session_ids: tileOrder,
+                                            lines: TILE_LINES}));
+  ws.onmessage = ev => {
+    const m = JSON.parse(ev.data);
+    if (m.type !== "screen") return;
+    const pre = document.querySelector(`[data-tile="${CSS.escape(m.session_id)}"] pre`);
+    if (pre) pre.innerHTML = rowsOf(m).map(row => rowHTML(row)).join("\n");
+  };
+  ws.onclose = () => { if (tiling) setTimeout(connectTiles, 1500); };
 }
 
 /* ---------------- routing ----------------
@@ -814,8 +1017,9 @@ async function fetchRange(start, count) {
 function updateScreen() {
   const wrap = $("screen-wrap");
   const pinned = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 60;
-  $("screen").innerHTML = hist.map(row => rowHTML(
-    row, cursor && !row.marker && cursor[0] === row.n ? cursor[1] : -1)).join("\n");
+  $("screen").innerHTML = hist.map((row, i) => highlight(rowHTML(
+    row, cursor && !row.marker && cursor[0] === row.n ? cursor[1] : -1),
+    row, i)).join("\n");
   $("load-earlier").style.display = histStart > firstLine ? "block" : "none";
   if (pinned) wrap.scrollTop = wrap.scrollHeight;
 }
@@ -855,6 +1059,89 @@ function sendInput() {
 function sendKey(name) {
   latch = null; paintLatches();      // a row key is itself the key you meant
   if (ws && ws.readyState === 1) ws.send(JSON.stringify({type: "key", name}));
+}
+
+/* ---------------- find ----------------
+   Matches in the loaded history are highlighted as you type; the server is
+   only asked when the answer isn't in what the phone is holding. */
+let finding = "", hits = [], hitAt = -1;
+
+function openFind() {
+  $("find-bar").hidden = false;
+  $("find").focus();
+  $("find").select();
+}
+function closeFind() {
+  $("find-bar").hidden = true;
+  finding = ""; hits = []; hitAt = -1;
+  updateScreen();
+  $("input").focus();
+}
+function runFind() {
+  finding = $("find").value;
+  hits = [];
+  if (finding) {
+    const needle = finding.toLowerCase();
+    hist.forEach((row, i) => {
+      if (!row.marker && row.t.toLowerCase().includes(needle)) hits.push(i);
+    });
+  }
+  hitAt = hits.length ? hits.length - 1 : -1;    // newest match first
+  updateScreen();
+  showHit();
+}
+function showHit() {
+  const total = hits.length;
+  status(finding ? (total ? `${hitAt + 1} of ${total}` : "no match here") : "");
+  const mark = $("screen").querySelector("mark.here");
+  if (mark) mark.scrollIntoView({block: "center"});
+}
+function stepFind(by) {
+  if (!hits.length) { searchServer(); return; }
+  hitAt = (hitAt + by + hits.length) % hits.length;
+  updateScreen();
+  showHit();
+}
+/* Nothing in the loaded history — ask the server, which reads the whole
+   buffer, and jump to the newest match. */
+async function searchServer() {
+  if (!finding || !currentId) return;
+  status("searching the whole session…");
+  try {
+    const r = await fetch("/api/search?session_id=" +
+      encodeURIComponent(currentId) + "&q=" + encodeURIComponent(finding));
+    const data = await readBody(r);
+    if (!r.ok) { status(data.message); return; }
+    if (!data.hits.length) { status(`no "${finding}" in this session`); return; }
+    const target = data.hits[data.hits.length - 1].n;
+    const from = Math.max(data.first, target - 120);
+    const chunk = await fetchRange(from, 240);
+    if (chunk && chunk.lines.length) {
+      hist = rowsOf(chunk);
+      firstLine = chunk.first || 0;
+      renumber();
+      runFind();
+    }
+  } catch (e) {
+    status(String(e));
+  }
+}
+function highlight(html, row, index) {
+  if (!finding || row.marker) return html;
+  const needle = finding.toLowerCase();
+  if (!row.t.toLowerCase().includes(needle)) return html;
+  // Re-render the row as plain text when it holds a match: splicing marks
+  // into styled runs would fight with the cursor for the same characters.
+  const here = hits[hitAt] === index;
+  let out = "", rest = row.t, at = 0;
+  while (true) {
+    const found = rest.toLowerCase().indexOf(needle, at);
+    if (found < 0) { out += esc(rest.slice(at)); break; }
+    out += esc(rest.slice(at, found)) +
+      `<mark class="${here ? "here" : ""}">${esc(rest.substr(found, finding.length))}</mark>`;
+    at = found + finding.length;
+  }
+  return out;
 }
 
 /* ---------------- keyboard ----------------
@@ -945,6 +1232,8 @@ function sendActivate() {
 /* ---------------- wire up ---------------- */
 $("back").onclick = () => closeSession();
 $("new-window").onclick = () => createSession("window", null, $("new-window"));
+$("tiles-open").onclick = openTiles;
+$("tiles-back").onclick = closeTiles;
 $("send").onclick = sendInput;
 $("live").onclick = () => setLive(!live);
 $("input").addEventListener("input", onInput);
@@ -959,10 +1248,25 @@ $("input").addEventListener("keydown", e => {
   }
 });
 $("load-earlier").onclick = loadEarlier;
-$("screen").addEventListener("click", e => {
+$("screen").addEventListener("click", async e => {
   const gap = e.target.closest(".gap");
-  if (gap && gap.dataset.from !== undefined) fillGap(+gap.dataset.from);
+  if (gap && gap.dataset.from !== undefined) { fillGap(+gap.dataset.from); return; }
+  if (!getSelection().isCollapsed) return;      // they're selecting, not tapping
+  const line = lineAtPoint(e.clientY);
+  if (line === null) return;
+  status(await copyText(line) ? "line copied" : "couldn't reach the clipboard");
 });
+/* The screen is one <pre>, so work out which line was tapped from the y
+   position rather than hanging a listener on every row. */
+function lineAtPoint(y) {
+  const screen = $("screen");
+  const top = screen.getBoundingClientRect().top +
+              parseFloat(getComputedStyle(screen).paddingTop);
+  const height = fontSize * 1.32;
+  const index = Math.floor((y - top) / height);
+  const row = hist[index];
+  return row && !row.marker ? row.t : null;
+}
 function setFont(size, persist = true) {
   fontSize = Math.min(20, Math.max(6, size));
   $("screen").style.fontSize = fontSize + "px";
@@ -1018,6 +1322,15 @@ function setFit(on) {
 }
 $("fit").onclick = () => setFit(!fit);
 $("reshape").onclick = toggleReshape;
+$("find-open").onclick = openFind;
+$("find-close").onclick = closeFind;
+$("find-next").onclick = () => stepFind(1);
+$("find-prev").onclick = () => stepFind(-1);
+$("find").addEventListener("input", runFind);
+$("find").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); stepFind(1); }
+  if (e.key === "Escape") closeFind();
+});
 addEventListener("resize", applyFit);          // rotation, or a resized window
 $("font-minus").onclick = () => { setFit(false); setFont(fontSize - 1); };
 $("font-plus").onclick = () => { setFit(false); setFont(fontSize + 1); };

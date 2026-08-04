@@ -246,6 +246,35 @@ lines**. The default is only 1000, and a busy session blows past it in
 seconds — those lines are gone from iTerm2 itself, and nothing here can bring
 them back. "Unlimited scrollback" fixes it at the source.
 
+## All at once
+
+**▦ All at once** on the session list watches every session together and
+shows the last 16 lines of each, live, in one scrolling page. With several
+agents running, "what is everyone doing" is the actual question, and opening
+each in turn is a poor way to answer it. Tiles carry the session name and
+which window/tab it is, and **Open** drops into any of them full-screen.
+
+One websocket carries them all: each frame says which session it belongs to,
+and a tile asks for only the lines it shows rather than the full 400.
+
+## Finding things
+
+**⌕** searches the session. Matches in the history the phone already holds
+are highlighted as you type, with ↑/↓ to step and the current one picked out
+in blue. When there's no match in what's loaded, ↓ asks the server, which
+reads the whole buffer newest-first and jumps the view to the most recent
+hit — so a line that scrolled past hours ago is still findable.
+
+## Naming and copying
+
+**✎** on a card renames a session, through iTerm2's own naming, so it shows
+on the Mac too. Six cards all reading `shell` is not a list.
+
+Tapping a line copies it. `navigator.clipboard` needs a secure context, which
+`http://100.x` isn't, so it falls back to a selection and `execCommand` —
+which is what actually works on iOS over plain HTTP. Selecting text normally
+still works; only a tap with no selection copies.
+
 ## Knowing which pane needs you
 
 With several panes running, the question isn't what exists, it's which one
