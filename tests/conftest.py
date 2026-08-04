@@ -27,10 +27,12 @@ class FakeSession:
     """A session whose line N always reads "line N", so tests can assert on
     which absolute line numbers came back."""
 
-    def __init__(self, session_id="sess-1", overflow=0, scrollback=10, screen=5):
+    def __init__(self, session_id="sess-1", overflow=0, scrollback=10, screen=5,
+                 cols=80):
         self.session_id = session_id
         self.name = "shell"
         self.info = FakeLineInfo(overflow, scrollback, screen)
+        self.grid_size = SimpleNamespace(width=cols, height=screen)
         self.sent = []
         self.requests = []
         self.activations = []

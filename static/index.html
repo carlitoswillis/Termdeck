@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<!-- Pinch-zoom stays enabled on purpose: on a phone it's the fastest way to
+     read one dense corner of a wide pane. #input-bar uses 16px text so iOS
+     doesn't auto-zoom the page when the Send box takes focus. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>termdeck</title>
@@ -124,7 +127,7 @@
   }
   #term-bar button { padding: 5px 9px; font-size: 12px; }
   #term-bar button.on { color: var(--accent); border-color: #3a3c44; }
-  #follow { font-size: 14px; line-height: 1; }
+  #follow, #fit { font-size: 14px; line-height: 1; }
   #screen-wrap {
     flex: 1;
     overflow: auto;
@@ -181,7 +184,7 @@
   #input-bar input {
     flex: 1;
     min-width: 0;
-    font: 14px var(--mono);
+    font: 16px var(--mono);
     color: var(--text);
     background: var(--panel);
     border: 1px solid var(--border);
@@ -209,6 +212,7 @@
     <button id="back">‹ Back</button>
     <div id="term-title"></div>
     <button id="follow" title="Bring this session to the front on the Mac">⤒</button>
+    <button id="fit" title="Size the text so the pane's full width fits">⤢</button>
     <button id="font-minus">A−</button>
     <button id="font-plus">A+</button>
     <button id="wrap-toggle">Wrap</button>
@@ -246,6 +250,8 @@ const titles = {};        // session id -> title, for resolving a deep link
 let hist = [], histStart = 0, firstLine = 0, totalLines = 0;
 let pendingFrame = null, applying = false, loading = false;
 let follow = localStorage.getItem("follow") !== "0";   // on unless turned off
+let fit = localStorage.getItem("fit") === "1";
+let cols = 0;             // the pane's width in cells, from the last frame
 let pendingActivate = false;
 let fontSize = +(localStorage.getItem("fontSize") || 12);
 let listTimer = null;
@@ -428,6 +434,7 @@ function drain() {
 async function applyFrame(m) {
   firstLine = m.first || 0;
   totalLines = m.total;
+  if (m.cols && m.cols !== cols) { cols = m.cols; applyFit(); }
   const histEnd = histStart + hist.length;
   if (hist.length && m.start > histEnd) {
     // Output scrolled past the tail window since the last frame; fetch what
@@ -514,18 +521,55 @@ $("input").addEventListener("keydown", e => {
   if (e.key === "Enter") { e.preventDefault(); sendInput(); }
 });
 $("load-earlier").onclick = loadEarlier;
-function setFont(size) {
-  fontSize = Math.min(20, Math.max(8, size));
+function setFont(size, persist = true) {
+  fontSize = Math.min(20, Math.max(6, size));
   $("screen").style.fontSize = fontSize + "px";
-  localStorage.setItem("fontSize", fontSize);
+  if (persist) localStorage.setItem("fontSize", fontSize);
 }
-$("font-minus").onclick = () => setFont(fontSize - 1);
-$("font-plus").onclick = () => setFont(fontSize + 1);
+/* Width of one character per 1px of font-size, measured once from the actual
+   font rather than assumed. */
+function charRatio() {
+  if (!charRatio.cached) {
+    const probe = document.createElement("span");
+    probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre;" +
+      "font-family:var(--mono);font-size:100px";
+    probe.textContent = "M".repeat(50);
+    document.body.appendChild(probe);
+    charRatio.cached = probe.getBoundingClientRect().width / 50 / 100;
+    probe.remove();
+  }
+  return charRatio.cached;
+}
+/* Shrink text until the pane's full width fits the screen. Uses the pane's
+   real column count, so a narrow split doesn't get sized as if it were 200
+   columns wide. */
+function applyFit() {
+  if (!fit || !cols) return;
+  const avail = $("screen-wrap").clientWidth - 16;   // #screen padding
+  setFont(Math.floor(avail / (cols * charRatio())), false);
+}
+function setFit(on) {
+  fit = on;
+  localStorage.setItem("fit", on ? "1" : "0");
+  $("fit").classList.toggle("on", on);
+  if (on) { setWrap(false); applyFit(); }
+  else setFont(+(localStorage.getItem("fontSize") || 12));
+}
+$("fit").onclick = () => setFit(!fit);
+addEventListener("resize", applyFit);          // rotation, or a resized window
+$("font-minus").onclick = () => { setFit(false); setFont(fontSize - 1); };
+$("font-plus").onclick = () => { setFit(false); setFont(fontSize + 1); };
 function setWrap(on) {
   $("screen").classList.toggle("wrap", on);
   localStorage.setItem("wrap", on ? "1" : "");
 }
-$("wrap-toggle").onclick = () => setWrap(!$("screen").classList.contains("wrap"));
+/* Wrapping and fitting answer the same question two ways — turning one on
+   turns the other off. */
+$("wrap-toggle").onclick = () => {
+  const on = !$("screen").classList.contains("wrap");
+  if (on) setFit(false);
+  setWrap(on);
+};
 function setFollow(on) {
   follow = on;
   localStorage.setItem("follow", on ? "1" : "0");
@@ -537,6 +581,7 @@ $("follow").onclick = () => { setFollow(!follow); if (follow) sendActivate(); };
 setFont(fontSize);
 setWrap(!!localStorage.getItem("wrap"));
 setFollow(follow);
+setFit(fit);
 KEYS.forEach(([name, label]) => {
   const b = document.createElement("button");
   b.textContent = label;

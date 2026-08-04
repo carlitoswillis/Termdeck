@@ -173,10 +173,15 @@ async def _read_lines(session, start, count):
             begin = max(first, min(begin, total))
             count = min(count, total - begin)
             lines = await session.async_get_contents(begin, count) if count else []
+    # The pane's real width in cells, so the phone can size text to fit it
+    # rather than guessing from the longest line it happens to have.
+    grid = getattr(session, "grid_size", None)
     return {
         "first": first,
         "start": begin,
         "total": total,
+        "cols": getattr(grid, "width", 0) or 0,
+        "rows": getattr(grid, "height", 0) or 0,
         "lines": [l.string for l in lines],
     }
 

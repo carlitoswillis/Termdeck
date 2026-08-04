@@ -35,6 +35,26 @@ async def test_start_below_overflow_is_clamped_up():
     assert len(state["lines"]) == 400
 
 
+async def test_the_pane_width_rides_along():
+    """The phone sizes text from the pane's real column count, so it has to
+    come with every frame."""
+    session = FakeSession(cols=132, screen=40)
+
+    state = await server.read_lines(session)
+
+    assert state["cols"] == 132
+    assert state["rows"] == 40
+
+
+async def test_a_session_without_a_grid_reports_zero():
+    session = FakeSession()
+    del session.grid_size
+
+    state = await server.read_lines(session)
+
+    assert state["cols"] == 0
+
+
 async def test_short_session_returns_everything_it_has():
     session = FakeSession(overflow=0, scrollback=3, screen=2)
 

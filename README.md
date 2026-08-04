@@ -64,6 +64,22 @@ two things can quietly break underneath it, and both heal themselves:
 - **The iTerm2 API connection drops.** Any failed call resets the connection
   and the next poll reconnects, so the phone reconnects on its own.
 
+## Updating
+
+`git pull` on its own restarts nothing — the running process already holds the
+old code. pm2 watches `server.py`, so a pull that changes it restarts termdeck
+within a second; `static/` needs no restart because those files are read from
+disk per request (just refresh the page). Two things the watcher can't do for
+you:
+
+- **`ecosystem.config.js` changed** — pm2 doesn't re-read its own config on
+  restart. Re-run `./install.sh` (or `pm2 startOrRestart ecosystem.config.js
+  --update-env`).
+- **`requirements.txt` changed** — re-run `./install.sh` to install them.
+
+Under launchd there's no watcher at all: `launchctl kickstart -k
+gui/$(id -u)/com.carlitos.termdeck` after a pull, or just `./install.sh`.
+
 To make pm2 itself survive a reboot, run these once:
 
 ```
@@ -104,6 +120,29 @@ They run against a fake iTerm2 layer, so no Mac or running iTerm2 is needed.
 **+ Tab** opens beside the session you were last watching — the window on your
 phone, not whatever iTerm2 has in front on the Mac — and drops you straight
 into it. With no windows left open at all, it opens one.
+
+## Fitting it to the screen
+
+Every frame carries the pane's real width in cells, and **⤢** sizes the text so
+exactly that many columns fit the screen — not a guess from the longest line
+that happens to be on screen, so a narrow split doesn't get treated as if it
+were 200 columns wide. It re-fits on rotation and window resize, and turning it
+on turns Wrap off, since the two answer the same question different ways.
+
+What that works out to for a 120-column pane:
+
+| screen | fitted size | verdict |
+| --- | --- | --- |
+| desktop, 1280px | 17px | roomier than the 12px default — leave Fit on |
+| phone, landscape | 11px | comfortable; the honest answer for TUIs on a phone |
+| phone, portrait | 6px (floor) | still overflows — 120 columns don't fit 390px |
+
+So on a phone: **rotate** for anything with a layout (vim, htop, a TUI), and
+use **Wrap** at a comfortable size for reading logs, where line breaks don't
+matter. Pinch-zoom is deliberately enabled too — it's the fastest way to read
+one dense corner without changing any setting. Portrait-with-Fit only works if
+the pane itself is narrow; at ~10px legible text a phone holds about 60
+columns.
 
 ## One URL per session
 

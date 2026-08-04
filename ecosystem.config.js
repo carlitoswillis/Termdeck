@@ -10,6 +10,12 @@ module.exports = {
     cwd: __dirname,
     autorestart: true,
     restart_delay: 5000,
+    // `git pull` doesn't restart anything on its own — the running process
+    // already has the old code in memory. Watching server.py means a pull
+    // that changes it restarts termdeck; static/ needs no restart because
+    // those files are read from disk per request.
+    watch: [path.join(__dirname, "server.py")],
+    ignore_watch: ["logs", ".git", ".venv", "tests", "static"],
     // The server only exits when it can't bind port 7717, so a restart storm
     // means something else is holding it — stop trying and leave it in the log.
     max_restarts: 10,
