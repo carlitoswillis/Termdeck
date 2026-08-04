@@ -10,10 +10,19 @@ the exact windows/tabs/panes you already have open, scrollback included.
 ./install.sh
 ```
 
-Creates `.venv`, installs the dependencies, and loads the LaunchAgent — so
-termdeck is running now and starts again at every login. It prints the URLs
-when it's up. Re-run it any time; it reinstalls over itself, including after
-moving the repo somewhere else.
+Creates `.venv`, installs the dependencies, and hands the process to a
+supervisor — **pm2** if you have it, otherwise a launchd LaunchAgent — so
+termdeck is running now and comes back on its own. It prints the URLs when
+it's up. Re-run it any time; it reinstalls over itself, including after moving
+the repo somewhere else.
+
+Force either one with `./install.sh --pm2` or `./install.sh --launchd`. Both
+want port 7717, so whichever you pick, the installer clears the other out
+first. Under pm2 the app is `termdeck` (`pm2 logs termdeck`, `pm2 restart
+termdeck`, `pm2 monit`), configured by `ecosystem.config.js`, which derives
+every path from its own location. `pm2 save` runs for you; to have pm2 itself
+survive a reboot, run `pm2 startup` once and follow the command it prints —
+that part needs your privileges, so the installer won't do it behind your back.
 
 The one thing it can't do for you: in iTerm2, turn on **Settings → General →
 Magic → Enable Python API** (on 3.4 it may be under **Settings → API**). Takes
@@ -27,12 +36,13 @@ the order doesn't matter. Approve the connection if iTerm2 asks.
 ```
 
 Runs it in the foreground (and installs dependencies on first run, so this
-works on its own from a fresh clone). With the LaunchAgent installed you don't
-need this — it's already running.
+works on its own from a fresh clone). After `./install.sh` you don't need this
+— it's already running.
 
 Only one copy can hold port 7717, so if startup says the address is in use,
-stop the LaunchAgent first: `launchctl bootout gui/$(id -u)/com.carlitos.termdeck`.
-Logs are in `logs/termdeck.log` and `logs/termdeck.err.log`.
+stop the supervised copy first: `pm2 stop termdeck`, or
+`launchctl bootout gui/$(id -u)/com.carlitos.termdeck`. Either way the logs
+land in `logs/termdeck.log` and `logs/termdeck.err.log`.
 
 ## URLs
 
