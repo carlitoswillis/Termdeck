@@ -68,6 +68,8 @@ class FakeSession:
         self.line_styles = None       # tests can hand back per-line styles
         self.streamer = None
         self.streamer_error = None
+        self.resizes = []
+        self.resize_error = None
 
     async def async_get_line_info(self):
         return self.info
@@ -88,6 +90,12 @@ class FakeSession:
 
     async def async_send_text(self, text, suppress_broadcast=False):
         self.sent.append(text)
+
+    async def async_set_grid_size(self, size):
+        if self.resize_error:
+            raise self.resize_error
+        self.resizes.append((size.width, size.height))
+        self.grid_size = SimpleNamespace(width=size.width, height=size.height)
 
     def get_screen_streamer(self, want_contents=True):
         if self.streamer_error:

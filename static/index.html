@@ -134,7 +134,7 @@
   }
   #term-bar button { padding: 5px 9px; font-size: 12px; }
   #term-bar button.on { color: var(--accent); border-color: #3a3c44; }
-  #follow, #fit { font-size: 14px; line-height: 1; }
+  #follow, #fit, #reshape { font-size: 14px; line-height: 1; }
   #screen-wrap {
     flex: 1;
     overflow: auto;
@@ -222,6 +222,7 @@
     <div id="term-title"></div>
     <button id="follow" title="Bring this session to the front on the Mac">⤒</button>
     <button id="fit" title="Size the text so the pane's full width fits">⤢</button>
+    <button id="reshape" title="Reshape the pane on the Mac to fit this screen">⇲</button>
     <button id="font-minus">A−</button>
     <button id="font-plus">A+</button>
     <button id="wrap-toggle">Wrap</button>
@@ -266,7 +267,8 @@ let hist = [], histStart = 0, firstLine = 0, totalLines = 0;
 let pendingFrame = null, applying = false, loading = false;
 let follow = localStorage.getItem("follow") !== "0";   // on unless turned off
 let fit = localStorage.getItem("fit") === "1";
-let cols = 0;             // the pane's width in cells, from the last frame
+let cols = 0;             // the pane's size in cells, from the last frame
+let rows = 0, paneCols = 0, paneRows = 0, reshaped = false;
 let pendingActivate = false;
 let fontSize = +(localStorage.getItem("fontSize") || 12);
 let listTimer = null;
@@ -381,6 +383,8 @@ function openSession(id, title, push = true) {
   currentId = id; currentTitle = title; lastId = id;
   hist = []; histStart = 0; firstLine = 0; totalLines = 0; pendingFrame = null;
   pendingActivate = follow;   // only on a deliberate open, never on reconnect
+  paneCols = 0; paneRows = 0; reshaped = false;
+  $("reshape").classList.remove("on");
   $("term-title").textContent = title;
   $("screen").textContent = "";
   $("status").textContent = "connecting…";
@@ -509,7 +513,10 @@ function drain() {
 async function applyFrame(m) {
   firstLine = m.first || 0;
   totalLines = m.total;
+  if (m.rows) rows = m.rows;
   if (m.cols && m.cols !== cols) { cols = m.cols; applyFit(); }
+  // Remember the shape the pane had before we touched it.
+  if (m.cols && !paneCols && !reshaped) { paneCols = m.cols; paneRows = m.rows; }
   const histEnd = histStart + hist.length;
   if (hist.length && m.start > histEnd) {
     // Output scrolled past the tail window since the last frame; fetch what
@@ -719,6 +726,25 @@ function applyFit() {
   const avail = $("screen-wrap").clientWidth - 16;   // #screen padding
   setFont(Math.floor(avail / (cols * charRatio())), false);
 }
+/* The honest fix for a phone: make the pane the size this screen can show,
+   instead of shrinking 120 columns into 6px text. Reverts on a second tap —
+   and the server puts it back anyway when this socket closes. */
+function toggleReshape() {
+  if (!currentId || !ws || ws.readyState !== 1) return;
+  if (reshaped) {
+    if (paneCols) ws.send(JSON.stringify({type: "resize", cols: paneCols, rows: paneRows}));
+    reshaped = false;
+  } else {
+    const width = $("screen-wrap").clientWidth - 16;
+    const height = $("screen-wrap").clientHeight - 12;
+    const wanted = Math.floor(width / (fontSize * charRatio()));
+    const tall = Math.floor(height / (fontSize * 1.32));   // CSS line-height
+    if (!paneCols) { paneCols = cols; paneRows = rows; }
+    ws.send(JSON.stringify({type: "resize", cols: wanted, rows: tall}));
+    reshaped = true;
+  }
+  $("reshape").classList.toggle("on", reshaped);
+}
 function setFit(on) {
   fit = on;
   localStorage.setItem("fit", on ? "1" : "0");
@@ -727,6 +753,7 @@ function setFit(on) {
   else setFont(+(localStorage.getItem("fontSize") || 12));
 }
 $("fit").onclick = () => setFit(!fit);
+$("reshape").onclick = toggleReshape;
 addEventListener("resize", applyFit);          // rotation, or a resized window
 $("font-minus").onclick = () => { setFit(false); setFont(fontSize - 1); };
 $("font-plus").onclick = () => { setFit(false); setFont(fontSize + 1); };

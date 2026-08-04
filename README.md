@@ -185,12 +185,22 @@ What that works out to for a 120-column pane:
 | phone, landscape | 11px | comfortable; the honest answer for TUIs on a phone |
 | phone, portrait | 6px (floor) | still overflows — 120 columns don't fit 390px |
 
-So on a phone: **rotate** for anything with a layout (vim, htop, a TUI), and
-use **Wrap** at a comfortable size for reading logs, where line breaks don't
-matter. Pinch-zoom is deliberately enabled too — it's the fastest way to read
-one dense corner without changing any setting. Portrait-with-Fit only works if
-the pane itself is narrow; at ~10px legible text a phone holds about 60
-columns.
+No font trick escapes that last row: 120 columns don't fit a phone held
+upright. So **⇲ reshapes the pane itself** — it tells iTerm2 to make the
+session the size this screen can actually show. A 120×10 pane becomes about
+51×41 on a phone, readable at 12px, and TUIs reflow to match instead of being
+cropped.
+
+That changes what's on your Mac, so it's careful about it: tap again to put it
+back, and the server restores the original shape by itself when the phone
+disconnects — a phone dropping into a tunnel shouldn't leave a pane 51 columns
+wide. iTerm2 refuses to resize a session that shares a tab with split panes,
+or one in a fullscreen window; you get told which.
+
+Otherwise on a phone: **rotate** for anything with a layout, and use **Wrap**
+at a comfortable size for reading logs, where line breaks don't matter.
+Pinch-zoom is enabled too — the fastest way to read one dense corner without
+changing any setting.
 
 ## One URL per session
 

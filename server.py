@@ -341,6 +341,18 @@ async def change_signal(session):
                 await streamer.__aexit__(None, None, None)
 
 
+async def resize_session(session, cols, rows):
+    """Reshape the pane itself, so a phone gets a terminal it can actually
+    show rather than 120 columns of 6px text.
+
+    iTerm2 refuses this for a session sharing a tab with split panes, and for
+    fullscreen windows — the error says which, so the phone can report it.
+    """
+    cols = max(20, min(500, int(cols)))
+    rows = max(5, min(200, int(rows)))
+    await session.async_set_grid_size(iterm2.util.Size(cols, rows))
+
+
 async def activate_session(session):
     """Bring a session to the front on the Mac: select the pane, select its
     tab, raise its window, and put iTerm2 itself in the foreground."""
@@ -486,6 +498,9 @@ async def ws_handler(request):
     await ws.prepare(request)
     session_id = None
     watcher = None
+    # Panes this viewer reshaped, and the size they had before, so the Mac
+    # goes back to normal when the phone goes away.
+    reshaped = {}
 
     async def send_json(payload):
         try:
@@ -558,6 +573,19 @@ async def ws_handler(request):
                 except Exception as exc:
                     bridge.reset()
                     await send_json(error_payload(exc))
+            elif kind == "resize" and session_id:
+                try:
+                    session = await get_session(session_id)
+                    if session is None:
+                        await send_json({"type": "gone"})
+                        continue
+                    grid = getattr(session, "grid_size", None)
+                    if session_id not in reshaped and grid:
+                        reshaped[session_id] = (grid.width, grid.height)
+                    await resize_session(session, data.get("cols", 80),
+                                         data.get("rows", 24))
+                except Exception as exc:
+                    await send_json(error_payload(exc))
             elif kind == "activate" and session_id:
                 try:
                     session = await get_session(session_id)
@@ -571,6 +599,13 @@ async def ws_handler(request):
                     await send_json(error_payload(exc))
     finally:
         await stop_watcher()
+        # Put the Mac back the way it was, even if the phone just went into a
+        # tunnel — leaving someone's pane 60 columns wide is not on.
+        for sid, (cols, rows) in reshaped.items():
+            with contextlib.suppress(Exception):
+                session = await get_session(sid)
+                if session:
+                    await resize_session(session, cols, rows)
     return ws
 
 
