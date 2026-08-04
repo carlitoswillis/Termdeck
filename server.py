@@ -32,7 +32,7 @@ PORT = 7717
 # Bumped whenever the browser needs a server that has caught up. The page
 # checks it and says so, because "pull, but the process is still the old one"
 # is invisible otherwise: static files are read per request, Python isn't.
-VERSION = 13
+VERSION = 14
 TAIL_LINES = 400          # lines of scrollback kept in the live view
 POLL_SECONDS = 0.4        # fallback poll interval, when iTerm2 won't push
 IDLE_SECONDS = 5          # re-read anyway, in case a notification went missing
@@ -738,6 +738,64 @@ async def api_close(request):
         return web.json_response(error_payload(exc), status=502)
 
 
+async def api_cells(request):
+    """A cell-by-cell dump of the last few lines, as plain text.
+
+    Rendering bugs live in how iTerm2 describes a line, so this shows exactly
+    that — openable from the phone, since that's where the problem is seen.
+    """
+    session_id = request.query.get("session_id")
+    try:
+        count = min(int(request.query.get("count", 6)), 50)
+    except ValueError:
+        count = 6
+    session = await get_session(session_id) if session_id else None
+    if session is None:
+        return web.Response(status=404, text="no such session\n")
+    try:
+        conn = await bridge.connection()
+        async with bridge.txn_lock:
+            async with iterm2.Transaction(conn):
+                info = await session.async_get_line_info()
+                first = info.overflow
+                total = (first + info.scrollback_buffer_height
+                         + info.mutable_area_height)
+                begin = max(first, total - count)
+                lines = await session.async_get_contents(begin, total - begin)
+    except Exception as exc:
+        log_error("dumping cells", exc)
+        return web.Response(status=502, text=f"{exc}\n")
+
+    out = [f"termdeck v{VERSION}  —  last {len(lines)} lines", ""]
+    for n, line in enumerate(lines, start=begin):
+        rebuilt, _ = rebuild_line(line)
+        out.append(f"--- line {n} " + "-" * 40)
+        out.append(f"  iTerm2 : {line.string!r}")
+        out.append(f"  sent   : {rebuilt!r}")
+        if line.string != rebuilt:
+            out.append("  (differ — cells were restored)")
+        empty = nul = odd = cells = 0
+        notes = []
+        while True:
+            try:
+                piece = line.string_at(cells)
+            except IndexError:
+                break
+            if piece == "":
+                empty += 1
+                notes.append(f"cell {cells}: empty")
+            elif not piece.strip("\x00"):
+                nul += 1
+                notes.append(f"cell {cells}: NUL")
+            elif len(piece) != 1:
+                odd += 1
+                notes.append(f"cell {cells}: {len(piece)}cp {piece!r}")
+            cells += 1
+        out.append(f"  cells  : {cells}  (empty {empty}, NUL {nul}, multi {odd})")
+        out += [f"    {note}" for note in notes[:8]]
+    return web.Response(text="\n".join(out) + "\n", content_type="text/plain")
+
+
 async def api_scrollback(request):
     try:
         session_id = request.query.get("session_id")
@@ -939,6 +997,7 @@ def make_app(password=None, allow_lan=False, secret="test-secret"):
     app.router.add_post("/login", make_login(password, secret))
     app.router.add_get("/api/sessions", api_sessions)
     app.router.add_get("/api/scrollback", api_scrollback)
+    app.router.add_get("/api/cells", api_cells)
     app.router.add_post("/api/new", api_new)
     app.router.add_post("/api/close", api_close)
     app.router.add_get("/api/ws", ws_handler)

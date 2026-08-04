@@ -307,7 +307,7 @@ const KEYS = [
 ];
 const SENTINEL = "⁣";   // invisible, but something Backspace can delete
 
-const NEEDS_VERSION = 13;   // keep in step with VERSION in server.py
+const NEEDS_VERSION = 14;   // keep in step with VERSION in server.py
 const CHUNK = 400;        // lines per "Load earlier" request
 const MAX_GAP = 5000;     // bigger gaps aren't worth stitching back together
 const MAX_HISTORY = 20000;// keep the DOM from growing without bound
@@ -325,6 +325,7 @@ let rows = 0, paneCols = 0, paneRows = 0, reshaped = false, cursor = null;
 /* What each session's line count was when we last looked at it, and which
    ones were busy last time the list refreshed. */
 let seen = JSON.parse(localStorage.getItem("seen") || "{}");
+let serverBehind = "";
 let wasBusy = {}, finished = {};
 let pendingActivate = false;
 let fontSize = +(localStorage.getItem("fontSize") || 12);
@@ -583,11 +584,11 @@ function connect() {
       pendingFrame = m;
       drain();
     } else if (m.type === "activated") {
-      $("status").textContent = `${currentTitle} · brought to front`;
+      status("brought to front");
     } else if (m.type === "gone") {
       // Keep the last output on screen to read, but drop the session from the
       // URL so a refresh doesn't try to reopen something that's dead.
-      $("status").textContent = "session closed — tap ‹ Back";
+      status("session closed — tap ‹ Back");
       history.replaceState({}, "", location.pathname + location.search);
     } else if (m.type === "error") {
       $("status").textContent = m.hint || m.message;
@@ -745,7 +746,13 @@ async function applyFrame(m) {
     renumber();
   }
   updateScreen();
-  $("status").textContent = `${currentTitle} · ${totalLines} lines`;
+  status();
+}
+/* The status line is the one thing on screen in the terminal view, so a
+   server that hasn't caught up gets said there too — not only on the list. */
+function status(extra) {
+  $("status").textContent = [currentTitle, `${totalLines} lines`, extra,
+                             serverBehind].filter(Boolean).join(" · ");
 }
 /* A visible placeholder beats a silent hole, and beats wiping the screen —
    and this one can be tapped to go and fetch what it stands for. */
@@ -1069,8 +1076,10 @@ async function checkVersion() {
     const r = await fetch("/healthz");
     const { version } = await r.json();
     if (version < NEEDS_VERSION) {
+      serverBehind = `server v${version} needs v${NEEDS_VERSION} — ./install.sh`;
       banner(`The termdeck server is running older code than this page ` +
              `(v${version}, needs v${NEEDS_VERSION}). On the Mac: ./install.sh`);
+      if (currentId) status();
     }
   } catch (e) { /* old servers answered "ok" in plain text; never mind */ }
 }
