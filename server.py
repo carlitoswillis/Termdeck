@@ -777,7 +777,17 @@ async def api_cells(request):
         count = min(int(request.query.get("count", 6)), 50)
     except ValueError:
         count = 6
-    session = await get_session(session_id) if session_id else None
+    if session_id and session_id != "current":
+        session = await get_session(session_id)
+    else:
+        # No id given: whatever is in front on the Mac. Nobody knows their
+        # session id off the top of their head, and looking it up on a phone
+        # to file a bug report is a silly thing to ask.
+        session = None
+        with contextlib.suppress(Exception):
+            app = await bridge.app(refresh=True)
+            tab = app.current_window.current_tab if app.current_window else None
+            session = tab.current_session if tab else None
     if session is None:
         return web.Response(status=404, text="no such session\n")
     try:
