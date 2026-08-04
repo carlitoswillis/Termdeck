@@ -6,6 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>termdeck</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%2317181c'/><path d='M8 11l5 5-5 5' stroke='%236ea8fe' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/><path d='M17 21h7' stroke='%23d6d7db' stroke-width='2.5' stroke-linecap='round'/></svg>">
 <style>
   :root {
     --bg: #101114;
@@ -239,6 +240,7 @@ const MAX_GAP = 5000;     // bigger gaps aren't worth stitching back together
 const MAX_HISTORY = 20000;// keep the DOM from growing without bound
 
 let ws = null, currentId = null, currentTitle = "", lastId = null;
+const titles = {};        // session id -> title, for resolving a deep link
 /* `hist` holds the lines we currently display; `histStart` is the iTerm2
    line number of hist[0], and `firstLine` the oldest line iTerm2 still has. */
 let hist = [], histStart = 0, firstLine = 0, totalLines = 0;
@@ -268,9 +270,14 @@ async function refreshList() {
 function showNotice(err) {
   const n = document.createElement("div");
   n.className = "notice";
-  n.innerHTML = err.hint
-    ? `<b>iTerm2 API unreachable.</b><br>${err.hint}`
-    : `<b>Error:</b> ${err.message || "unknown"}`;
+  const bold = text => {
+    const b = document.createElement("b");
+    b.textContent = text;
+    return b;
+  };
+  if (err.hint) n.append(bold("iTerm2 API unreachable."), document.createElement("br"), err.hint);
+  else if (err.plain) n.textContent = err.message;
+  else n.append(bold("Error:"), " " + (err.message || "unknown"));
   $("list").replaceChildren(n);
 }
 function render(windows) {
@@ -284,6 +291,7 @@ function render(windows) {
     w.tabs.forEach(tab => {
       tab.sessions.forEach(s => {
         count++;
+        titles[s.id] = s.title;
         const card = document.createElement("button");
         card.className = "card";
         const meta = [s.job, s.path.replace(/^\/Users\/[^/]+/, "~"), s.tty.replace("/dev/","")]
@@ -326,8 +334,29 @@ async function createSession(kind) {
   }
 }
 
+/* ---------------- routing ----------------
+   Each session gets its own URL (#s=<session id>), so a refresh — or a
+   home-screen shortcut, or a link you send yourself — reopens that session
+   instead of dumping you back on the picker. Session ids survive reopening
+   the page; window/tab numbers don't, which is why they aren't in the URL. */
+function hashSession() {
+  const m = location.hash.match(/^#s=(.+)$/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+function pushSession(id) {
+  const url = id ? "#s=" + encodeURIComponent(id) : location.pathname + location.search;
+  if (hashSession() !== id) history.pushState({id}, "", url);
+}
+window.addEventListener("popstate", () => {
+  const id = hashSession();
+  if (id && id !== currentId) openSession(id, titles[id] || "session", false);
+  else if (!id && currentId) closeSession(false);
+});
+
 /* ---------------- terminal view ---------------- */
-function openSession(id, title) {
+function openSession(id, title, push = true) {
+  if (push) pushSession(id);
+  document.title = title + " · termdeck";
   currentId = id; currentTitle = title; lastId = id;
   hist = []; histStart = 0; firstLine = 0; totalLines = 0; pendingFrame = null;
   pendingActivate = follow;   // only on a deliberate open, never on reconnect
@@ -339,7 +368,9 @@ function openSession(id, title) {
   clearInterval(listTimer);
   connect();
 }
-function closeSession() {
+function closeSession(push = true) {
+  if (push) pushSession(null);
+  document.title = "termdeck";
   if (ws) { ws.onclose = null; ws.close(); ws = null; }
   currentId = null;
   $("term-view").style.display = "none";
@@ -365,7 +396,10 @@ function connect() {
     } else if (m.type === "activated") {
       $("status").textContent = `${currentTitle} · brought to front`;
     } else if (m.type === "gone") {
-      $("status").textContent = "session closed";
+      // Keep the last output on screen to read, but drop the session from the
+      // URL so a refresh doesn't try to reopen something that's dead.
+      $("status").textContent = "session closed — tap ‹ Back";
+      history.replaceState({}, "", location.pathname + location.search);
     } else if (m.type === "error") {
       $("status").textContent = m.hint || m.message;
     }
@@ -472,7 +506,7 @@ function sendActivate() {
 }
 
 /* ---------------- wire up ---------------- */
-$("back").onclick = closeSession;
+$("back").onclick = () => closeSession();
 $("new-tab").onclick = () => createSession("tab");
 $("new-window").onclick = () => createSession("window");
 $("send").onclick = sendInput;
@@ -520,8 +554,22 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
-refreshList();
-listTimer = setInterval(refreshList, 5000);
+/* Land on the session in the URL, if there is one. */
+async function boot() {
+  const id = hashSession();
+  await refreshList();
+  listTimer = setInterval(refreshList, 5000);
+  if (!id) return;
+  if (titles[id] || !Object.keys(titles).length) {
+    // Unknown titles means the list didn't load, not that the session died —
+    // still try, and let the terminal view report what's actually wrong.
+    openSession(id, titles[id] || "session", false);
+  } else {
+    history.replaceState({}, "", location.pathname + location.search);
+    showNotice({message: "That session is gone.", plain: true});
+  }
+}
+boot();
 </script>
 </body>
 </html>

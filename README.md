@@ -105,6 +105,20 @@ They run against a fake iTerm2 layer, so no Mac or running iTerm2 is needed.
 phone, not whatever iTerm2 has in front on the Mac — and drops you straight
 into it. With no windows left open at all, it opens one.
 
+## One URL per session
+
+Every session has its own address — `…:7717/#s=<session id>` — so a refresh
+puts you back in the session you were watching instead of the picker. Back and
+forward work, and the browser tab is named after the session, so several open
+at once stay tellable apart. Save one to your home screen and that shortcut
+goes straight to that terminal.
+
+Session ids are what's in the URL because they survive; window and tab numbers
+shift as you open and close things. If a saved link's session is gone, you land
+on the picker with a note saying so, and a session that dies while you're
+watching leaves its last output on screen but drops itself from the URL — so
+the next refresh doesn't chase a dead pane.
+
 ## Following your phone's focus
 
 The **⤒** button in the terminal bar (on by default, remembered per device)
