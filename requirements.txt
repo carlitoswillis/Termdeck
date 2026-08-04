@@ -1,2 +1,4 @@
 aiohttp>=3.9
-iterm2>=2.7
+# 2.20 is the first that asks iTerm2 for cell styles; older ones
+# render everything monochrome.
+iterm2>=2.20

@@ -242,6 +242,10 @@ def fake_iterm2(monkeypatch):
     app = FakeApp([FakeWindow([FakeTab([sess])])])
     FakeTransaction.depth = FakeTransaction.max_depth = 0
     FakeWindow.counter = 0
+    # Rebuilt scrollback is cached per (session, line). Every fake session
+    # here reuses "sess-1" and the same line numbers, so without this one
+    # test's lines get served to the next.
+    server._line_cache.clear()
 
     class WindowFactory:
         """Stands in for iterm2.Window, whose async_create is a staticmethod."""

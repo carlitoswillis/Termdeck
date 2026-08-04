@@ -36,6 +36,7 @@ VERSION = 14
 TAIL_LINES = 400          # lines of scrollback kept in the live view
 POLL_SECONDS = 0.4        # fallback poll interval, when iTerm2 won't push
 IDLE_SECONDS = 5          # re-read anyway, in case a notification went missing
+MIN_FRAME_SECONDS = 0.12  # ceiling on how often a busy session is re-read
 REBIND_SECONDS = 30       # how often to recheck the Tailscale address
 STATIC = Path(__file__).parent / "static"
 PASSWORD_FILE = Path(__file__).parent / ".termdeck-password"
@@ -373,15 +374,40 @@ async def cursor_position(session):
         return None            # a cursor is never worth losing the text over
 
 
-def line_payload(lines):
-    """Text plus a sparse map of line index -> style runs."""
+# Rebuilding a line walks every cell of it, which is 20ms for a screenful of
+# a wide pane — far too much to repeat 30 times a second. Scrollback can't
+# change once it has scrolled off the mutable area, so it's only ever built
+# once.
+_line_cache = {}
+CACHE_LIMIT = 4000
+
+
+def line_payload(lines, session_id=None, first=0, frozen_below=None):
+    """Text plus a sparse map of line index -> style runs.
+
+    `frozen_below` is the first line number that can still change; anything
+    above it is history and is remembered rather than rebuilt.
+    """
     text, styles = [], {}
     for i, line in enumerate(lines):
-        try:
-            content, runs = rebuild_line(line)
-        except Exception:
-            # Whatever went wrong, the text still has to arrive.
-            content, runs = line.string, None
+        number = first + i
+        key = (session_id, number)
+        cacheable = (session_id is not None and frozen_below is not None
+                     and number < frozen_below)
+        raw = line.string
+        hit = _line_cache.get(key) if cacheable else None
+        if hit and hit[0] == raw:
+            content, runs = hit[1], hit[2]
+        else:
+            try:
+                content, runs = rebuild_line(line)
+            except Exception:
+                # Whatever went wrong, the text still has to arrive.
+                content, runs = raw, None
+            if cacheable:
+                if len(_line_cache) > CACHE_LIMIT:
+                    _line_cache.clear()
+                _line_cache[key] = (raw, content, runs)
         text.append(content)
         if runs and not (len(runs) == 1 and runs[0][1:] == [None, None, 0]):
             styles[str(i)] = runs
@@ -404,7 +430,9 @@ async def _read_lines(session, start, count):
     # The pane's real width in cells, so the phone can size text to fit it
     # rather than guessing from the longest line it happens to have.
     grid = getattr(session, "grid_size", None)
-    text, styles = line_payload(lines)
+    # Only the mutable area can still change; everything above it is history.
+    text, styles = line_payload(lines, getattr(session, "session_id", None),
+                                begin, total - info.mutable_area_height)
     return {
         "first": first,
         "start": begin,
@@ -766,14 +794,27 @@ async def api_cells(request):
         log_error("dumping cells", exc)
         return web.Response(status=502, text=f"{exc}\n")
 
-    out = [f"termdeck v{VERSION}  —  last {len(lines)} lines", ""]
+    try:
+        import importlib.metadata
+        module = importlib.metadata.version("iterm2")
+    except Exception:
+        module = "unknown"
+    styled_cells = 0
+    out = [f"termdeck v{VERSION}  —  iterm2 module {module}  —  "
+           f"last {len(lines)} lines", ""]
     for n, line in enumerate(lines, start=begin):
-        rebuilt, _ = rebuild_line(line)
+        rebuilt, runs = rebuild_line(line)
         out.append(f"--- line {n} " + "-" * 40)
         out.append(f"  iTerm2 : {line.string!r}")
         out.append(f"  sent   : {rebuilt!r}")
         if line.string != rebuilt:
-            out.append("  (differ — cells were restored)")
+            out.append("  (differ — blanks were restored)")
+        if runs:
+            colours = sum(1 for run in runs if run[1:] != [None, None, 0])
+            out.append(f"  styles : {len(runs)} runs, {colours} of them styled")
+        else:
+            out.append("  styles : NONE — the rebuild disagreed with iTerm2, "
+                       "so colour was dropped to keep the text")
         empty = nul = odd = cells = 0
         notes = []
         while True:
@@ -790,9 +831,21 @@ async def api_cells(request):
             elif len(piece) != 1:
                 odd += 1
                 notes.append(f"cell {cells}: {len(piece)}cp {piece!r}")
+            if line.style_at(cells) is not None:
+                styled_cells += 1
             cells += 1
         out.append(f"  cells  : {cells}  (empty {empty}, NUL {nul}, multi {odd})")
         out += [f"    {note}" for note in notes[:8]]
+
+    out.append("")
+    if styled_cells:
+        out.append(f"iTerm2 described the style of {styled_cells} cells — "
+                   "colour information is arriving.")
+    else:
+        out.append("iTerm2 described the style of NO cells, which is why "
+                   "there is no colour. Either the iterm2 module is too old "
+                   "to ask for it (needs 2.20+; run ./install.sh, which now "
+                   "upgrades) or iTerm2 itself is too old to send it.")
     return web.Response(text="\n".join(out) + "\n", content_type="text/plain")
 
 
@@ -852,6 +905,10 @@ async def ws_handler(request):
                         if state != last_state:
                             last_state = state
                             await send_json({"type": "screen", **state})
+                        # iTerm2 notifies on every screen change, which during
+                        # heavy output is dozens a second — far more than a
+                        # phone can show, and each read costs real work.
+                        await asyncio.sleep(MIN_FRAME_SECONDS)
                         await wait()
             except asyncio.CancelledError:
                 raise

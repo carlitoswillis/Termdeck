@@ -39,9 +39,9 @@ if [[ ! -x .venv/bin/python ]]; then
   "$PY" -m venv .venv
 fi
 ./.venv/bin/python -m pip install --quiet --upgrade pip
-./.venv/bin/python -m pip install --quiet -r requirements.txt
+./.venv/bin/python -m pip install --quiet --upgrade -r requirements.txt
 if [[ "$dev" == yes ]]; then
-  ./.venv/bin/python -m pip install --quiet -r requirements-dev.txt
+  ./.venv/bin/python -m pip install --quiet --upgrade -r requirements-dev.txt
 fi
 mkdir -p logs
 
