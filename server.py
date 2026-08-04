@@ -180,6 +180,16 @@ async def _read_lines(session, start, count):
     }
 
 
+async def activate_session(session):
+    """Bring a session to the front on the Mac: select the pane, select its
+    tab, raise its window, and put iTerm2 itself in the foreground."""
+    await session.async_activate(select_tab=True, order_window_front=True)
+    app = await bridge.app()
+    # raise_all_windows would stack the other iTerm2 windows back on top of
+    # the one we just raised.
+    await app.async_activate(raise_all_windows=False)
+
+
 def error_payload(exc):
     msg = str(exc) or exc.__class__.__name__
     hint = ""
@@ -293,6 +303,17 @@ async def ws_handler(request):
                     session = await get_session(session_id)
                     if session:
                         await session.async_send_text(text)
+                except Exception as exc:
+                    bridge.reset()
+                    await send_json(error_payload(exc))
+            elif kind == "activate" and session_id:
+                try:
+                    session = await get_session(session_id)
+                    if session is None:
+                        await send_json({"type": "gone"})
+                        continue
+                    await activate_session(session)
+                    await send_json({"type": "activated"})
                 except Exception as exc:
                     bridge.reset()
                     await send_json(error_payload(exc))

@@ -115,6 +115,8 @@
     text-overflow: ellipsis;
   }
   #term-bar button { padding: 5px 9px; font-size: 12px; }
+  #term-bar button.on { color: var(--accent); border-color: #3a3c44; }
+  #follow { font-size: 14px; line-height: 1; }
   #screen-wrap {
     flex: 1;
     overflow: auto;
@@ -194,6 +196,7 @@
   <div id="term-bar">
     <button id="back">‹ Back</button>
     <div id="term-title"></div>
+    <button id="follow" title="Bring this session to the front on the Mac">⤒</button>
     <button id="font-minus">A−</button>
     <button id="font-plus">A+</button>
     <button id="wrap-toggle">Wrap</button>
@@ -229,6 +232,8 @@ let ws = null, currentId = null, currentTitle = "";
    line number of hist[0], and `firstLine` the oldest line iTerm2 still has. */
 let hist = [], histStart = 0, firstLine = 0, totalLines = 0;
 let pendingFrame = null, applying = false, loading = false;
+let follow = localStorage.getItem("follow") !== "0";   // on unless turned off
+let pendingActivate = false;
 let fontSize = +(localStorage.getItem("fontSize") || 12);
 let listTimer = null;
 
@@ -293,6 +298,7 @@ function render(windows) {
 function openSession(id, title) {
   currentId = id; currentTitle = title;
   hist = []; histStart = 0; firstLine = 0; totalLines = 0; pendingFrame = null;
+  pendingActivate = follow;   // only on a deliberate open, never on reconnect
   $("term-title").textContent = title;
   $("screen").textContent = "";
   $("status").textContent = "connecting…";
@@ -315,12 +321,17 @@ function connect() {
   if (ws) { ws.onclose = null; ws.close(); ws = null; }
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/api/ws`);
-  ws.onopen = () => ws.send(JSON.stringify({type: "watch", session_id: currentId}));
+  ws.onopen = () => {
+    ws.send(JSON.stringify({type: "watch", session_id: currentId}));
+    if (pendingActivate) { pendingActivate = false; sendActivate(); }
+  };
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
     if (m.type === "screen") {
       pendingFrame = m;
       drain();
+    } else if (m.type === "activated") {
+      $("status").textContent = `${currentTitle} · brought to front`;
     } else if (m.type === "gone") {
       $("status").textContent = "session closed";
     } else if (m.type === "error") {
@@ -424,6 +435,9 @@ function sendInput() {
 function sendKey(name) {
   if (ws && ws.readyState === 1) ws.send(JSON.stringify({type: "key", name}));
 }
+function sendActivate() {
+  if (ws && ws.readyState === 1 && currentId) ws.send(JSON.stringify({type: "activate"}));
+}
 
 /* ---------------- wire up ---------------- */
 $("back").onclick = closeSession;
@@ -444,8 +458,17 @@ function setWrap(on) {
   localStorage.setItem("wrap", on ? "1" : "");
 }
 $("wrap-toggle").onclick = () => setWrap(!$("screen").classList.contains("wrap"));
+function setFollow(on) {
+  follow = on;
+  localStorage.setItem("follow", on ? "1" : "0");
+  $("follow").classList.toggle("on", on);
+}
+/* Turning it on also brings the session you're watching to the front now, so
+   it doubles as a one-shot when you've left it off. */
+$("follow").onclick = () => { setFollow(!follow); if (follow) sendActivate(); };
 setFont(fontSize);
 setWrap(!!localStorage.getItem("wrap"));
+setFollow(follow);
 KEYS.forEach(([name, label]) => {
   const b = document.createElement("button");
   b.textContent = label;

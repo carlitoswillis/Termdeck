@@ -4,15 +4,35 @@ View and type into your local iTerm2 sessions from your phone (or any device)
 over Tailscale. No tmux required — it talks to iTerm2's Python API, so it sees
 the exact windows/tabs/panes you already have open, scrollback included.
 
-## One-time setup
+## Install
 
-1. In iTerm2: **Settings → General → Magic → Enable Python API** (on 3.4 this
-   may be under **Settings → API**). Takes effect immediately, no restart.
-   If iTerm2 asks whether to allow the connection, approve it.
-2. `./setup.sh` — creates `.venv` and installs `requirements.txt`
-   (aiohttp + iterm2). Re-run it any time to update dependencies.
+```
+./install.sh
+```
 
-The server retries until the API is reachable, so the order doesn't matter.
+Creates `.venv`, installs the dependencies, and loads the LaunchAgent — so
+termdeck is running now and starts again at every login. It prints the URLs
+when it's up. Re-run it any time; it reinstalls over itself, including after
+moving the repo somewhere else.
+
+The one thing it can't do for you: in iTerm2, turn on **Settings → General →
+Magic → Enable Python API** (on 3.4 it may be under **Settings → API**). Takes
+effect immediately, no restart, and the server retries until it's reachable, so
+the order doesn't matter. Approve the connection if iTerm2 asks.
+
+## Start
+
+```
+./run.sh
+```
+
+Runs it in the foreground (and installs dependencies on first run, so this
+works on its own from a fresh clone). With the LaunchAgent installed you don't
+need this — it's already running.
+
+Only one copy can hold port 7717, so if startup says the address is in use,
+stop the LaunchAgent first: `launchctl bootout gui/$(id -u)/com.carlitos.termdeck`.
+Logs are in `logs/termdeck.log` and `logs/termdeck.err.log`.
 
 ## URLs
 
@@ -22,23 +42,10 @@ The server retries until the API is reachable, so the order doesn't matter.
 
 The server binds only to localhost and the Tailscale interface — never LAN/public.
 
-## Running
-
-- Foreground: `./run.sh`
-- As a LaunchAgent (auto-start at login, restarts on crash): `./install-agent.sh`
-  — renders `com.carlitos.termdeck.plist.template` with this checkout's path
-  into `~/Library/LaunchAgents` and loads it. Safe to re-run after moving the
-  repo.
-  Stop: `launchctl bootout gui/$(id -u)/com.carlitos.termdeck`
-- Logs: `logs/termdeck.log` and `logs/termdeck.err.log`
-
-Only one copy can hold port 7717. If startup says the address is in use, the
-LaunchAgent is probably already running — stop it before using `./run.sh`.
-
 ## Tests
 
 ```
-./setup.sh requirements-dev.txt
+./install.sh --dev
 ./.venv/bin/python -m pytest
 ```
 
@@ -50,11 +57,23 @@ They run against a fake iTerm2 layer, so no Mac or running iTerm2 is needed.
   - `GET /api/sessions` — all iTerm2 windows/tabs/panes with titles/jobs/paths
   - `GET /api/ws` — websocket: polls the watched session's last 400 lines
     (scrollback + screen) every 400 ms, pushes on change; accepts
-    `{type:"input", text}` and `{type:"key", name}` to type into the session
+    `{type:"input", text}` and `{type:"key", name}` to type into the session,
+    and `{type:"activate"}` to bring it to the front on the Mac
   - `GET /api/scrollback` — older history for "Load earlier"
 - `static/index.html` — the phone UI: session list → live terminal view with
   key row (Esc/Tab/arrows/^C…), Send box (appends Enter), font size, wrap,
-  load-earlier.
+  load-earlier, follow-focus.
+
+## Following your phone's focus
+
+The **⤒** button in the terminal bar (on by default, remembered per device)
+makes the Mac follow what you're looking at: open a session on your phone and
+that pane is selected, its tab selected, its window raised, and iTerm2 brought
+to the foreground. It fires when you deliberately open a session — not when the
+page silently reconnects — so putting your phone down doesn't shuffle windows
+around. Turn it off and the phone becomes a pure read/write viewer that never
+disturbs the Mac; turning it back on brings the current session forward
+immediately, which doubles as a one-shot.
 
 Line reads return `{first, start, total, lines}`. iTerm2 numbers lines from the
 start of the session and drops the oldest once scrollback fills up, so `first`

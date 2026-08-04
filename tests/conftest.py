@@ -33,6 +33,8 @@ class FakeSession:
         self.info = FakeLineInfo(overflow, scrollback, screen)
         self.sent = []
         self.requests = []
+        self.activations = []
+        self.activate_error = None
 
     async def async_get_line_info(self):
         return self.info
@@ -53,6 +55,11 @@ class FakeSession:
     async def async_send_text(self, text, suppress_broadcast=False):
         self.sent.append(text)
 
+    async def async_activate(self, select_tab=True, order_window_front=True):
+        if self.activate_error:
+            raise self.activate_error
+        self.activations.append((select_tab, order_window_front))
+
 
 class FakeTab:
     def __init__(self, sessions, tab_id="tab-1"):
@@ -70,9 +77,13 @@ class FakeApp:
     def __init__(self, windows):
         self.terminal_windows = windows
         self.refreshes = 0
+        self.activations = []
 
     async def async_refresh(self):
         self.refreshes += 1
+
+    async def async_activate(self, raise_all_windows=True, ignoring_other_apps=False):
+        self.activations.append((raise_all_windows, ignoring_other_apps))
 
     def get_session_by_id(self, session_id, include_buried=True):
         for window in self.terminal_windows:

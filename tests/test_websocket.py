@@ -70,6 +70,41 @@ async def test_garbage_does_not_kill_the_socket(client):
         assert (await recv(ws, "screen"))["lines"]
 
 
+async def test_activate_brings_the_session_to_the_front(client, fake_iterm2):
+    async with client.ws_connect("/api/ws") as ws:
+        await ws.send_json({"type": "watch", "session_id": "sess-1"})
+        await recv(ws, "screen")
+
+        await ws.send_json({"type": "activate"})
+        await recv(ws, "activated")
+
+    # select the pane, select its tab, raise its window...
+    assert fake_iterm2.session.activations == [(True, True)]
+    # ...then iTerm2 itself, without restacking its other windows on top.
+    assert fake_iterm2.app.activations == [(False, False)]
+
+
+async def test_activate_before_watch_does_nothing(client, fake_iterm2):
+    async with client.ws_connect("/api/ws") as ws:
+        await ws.send_json({"type": "activate"})
+        await ws.send_json({"type": "watch", "session_id": "sess-1"})
+        await recv(ws, "screen")
+
+    assert fake_iterm2.session.activations == []
+
+
+async def test_a_failed_activate_reports_back(client, fake_iterm2):
+    fake_iterm2.session.activate_error = RuntimeError("no such window")
+
+    async with client.ws_connect("/api/ws") as ws:
+        await ws.send_json({"type": "watch", "session_id": "sess-1"})
+        await recv(ws, "screen")
+
+        await ws.send_json({"type": "activate"})
+
+        assert (await recv(ws, "error"))["message"] == "no such window"
+
+
 def test_keymap_covers_every_key_in_the_ui():
     html = (Path(__file__).resolve().parents[1] / "static" / "index.html").read_text()
     keys = re.search(r"const KEYS = \[(.*?)\];", html, re.S).group(1)
