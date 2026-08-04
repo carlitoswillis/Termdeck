@@ -1,4 +1,5 @@
 aiohttp>=3.9
-# 2.20 is the first that asks iTerm2 for cell styles; older ones
-# render everything monochrome.
-iterm2>=2.20
+# 2.10 is the first that asks iTerm2 for cell styles at all —
+# anything older renders every session monochrome. Verified by
+# reading 2.7 through 2.20: style=True appears in 2.10.
+iterm2>=2.10

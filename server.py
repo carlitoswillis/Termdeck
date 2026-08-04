@@ -844,7 +844,7 @@ async def api_cells(request):
     else:
         out.append("iTerm2 described the style of NO cells, which is why "
                    "there is no colour. Either the iterm2 module is too old "
-                   "to ask for it (needs 2.20+; run ./install.sh, which now "
+                   "to ask for it (needs 2.10+; run ./install.sh, which now "
                    "upgrades) or iTerm2 itself is too old to send it.")
     return web.Response(text="\n".join(out) + "\n", content_type="text/plain")
 
