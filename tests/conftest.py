@@ -68,9 +68,22 @@ class FakeTab:
 
 
 class FakeWindow:
+    counter = 0
+
     def __init__(self, tabs):
         self.tabs = tabs
         self.current_tab = tabs[0] if tabs else None
+        self.refuse_tab = False
+
+    async def async_create_tab(self, profile=None, command=None, index=None,
+                               profile_customizations=None):
+        if self.refuse_tab:
+            return None
+        FakeWindow.counter += 1
+        tab = FakeTab([FakeSession(f"new-{FakeWindow.counter}")],
+                      tab_id=f"tab-new-{FakeWindow.counter}")
+        self.tabs.append(tab)
+        return tab
 
 
 class FakeApp:
@@ -78,6 +91,10 @@ class FakeApp:
         self.terminal_windows = windows
         self.refreshes = 0
         self.activations = []
+
+    @property
+    def current_window(self):
+        return self.terminal_windows[-1] if self.terminal_windows else None
 
     async def async_refresh(self):
         self.refreshes += 1
@@ -117,6 +134,23 @@ def fake_iterm2(monkeypatch):
     sess = FakeSession()
     app = FakeApp([FakeWindow([FakeTab([sess])])])
     FakeTransaction.depth = FakeTransaction.max_depth = 0
+    FakeWindow.counter = 0
+
+    class WindowFactory:
+        """Stands in for iterm2.Window, whose async_create is a staticmethod."""
+        refuse = False
+
+        @staticmethod
+        async def async_create(connection, profile=None, command=None,
+                               profile_customizations=None):
+            if WindowFactory.refuse:
+                return None
+            FakeWindow.counter += 1
+            n = FakeWindow.counter
+            window = FakeWindow([FakeTab([FakeSession(f"win-{n}")],
+                                         tab_id=f"tab-win-{n}")])
+            app.terminal_windows.append(window)
+            return window
 
     async def fake_connection():
         return "fake-connection"
@@ -129,7 +163,8 @@ def fake_iterm2(monkeypatch):
     monkeypatch.setattr(server.bridge, "connection", fake_connection)
     monkeypatch.setattr(server.bridge, "app", fake_app)
     monkeypatch.setattr(server.iterm2, "Transaction", FakeTransaction)
-    return SimpleNamespace(app=app, session=sess)
+    monkeypatch.setattr(server.iterm2, "Window", WindowFactory)
+    return SimpleNamespace(app=app, session=sess, windows=WindowFactory)
 
 
 @pytest.fixture

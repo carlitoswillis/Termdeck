@@ -52,6 +52,13 @@
     align-items: baseline;
   }
   #list-view h1 small { color: var(--dim); font-weight: 400; font-size: 12px; }
+  #list-actions {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+  #list-actions button { font-size: 13px; }
+  #list-actions button:disabled { opacity: .5; }
   .window-label {
     color: var(--dim);
     font-size: 11px;
@@ -189,6 +196,10 @@
 
 <div id="list-view">
   <h1>termdeck <small id="list-status"></small></h1>
+  <div id="list-actions">
+    <button id="new-tab">+ Tab</button>
+    <button id="new-window">+ Window</button>
+  </div>
   <div id="list"></div>
 </div>
 
@@ -227,7 +238,7 @@ const CHUNK = 400;        // lines per "Load earlier" request
 const MAX_GAP = 5000;     // bigger gaps aren't worth stitching back together
 const MAX_HISTORY = 20000;// keep the DOM from growing without bound
 
-let ws = null, currentId = null, currentTitle = "";
+let ws = null, currentId = null, currentTitle = "", lastId = null;
 /* `hist` holds the lines we currently display; `histStart` is the iTerm2
    line number of hist[0], and `firstLine` the oldest line iTerm2 still has. */
 let hist = [], histStart = 0, firstLine = 0, totalLines = 0;
@@ -294,9 +305,30 @@ function render(windows) {
   $("list").replaceChildren(frag);
 }
 
+/* A new tab lands in the window of whatever you were last looking at, so the
+   phone keeps working where you left off. */
+async function createSession(kind) {
+  const btn = $(kind === "tab" ? "new-tab" : "new-window");
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/new", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({kind, session_id: lastId}),
+    });
+    const data = await r.json();
+    if (r.ok) openSession(data.session_id, data.title);
+    else showNotice(data);
+  } catch (e) {
+    showNotice({message: String(e)});
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 /* ---------------- terminal view ---------------- */
 function openSession(id, title) {
-  currentId = id; currentTitle = title;
+  currentId = id; currentTitle = title; lastId = id;
   hist = []; histStart = 0; firstLine = 0; totalLines = 0; pendingFrame = null;
   pendingActivate = follow;   // only on a deliberate open, never on reconnect
   $("term-title").textContent = title;
@@ -441,6 +473,8 @@ function sendActivate() {
 
 /* ---------------- wire up ---------------- */
 $("back").onclick = closeSession;
+$("new-tab").onclick = () => createSession("tab");
+$("new-window").onclick = () => createSession("window");
 $("send").onclick = sendInput;
 $("input").addEventListener("keydown", e => {
   if (e.key === "Enter") { e.preventDefault(); sendInput(); }

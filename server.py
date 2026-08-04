@@ -21,6 +21,7 @@ import iterm2
 PORT = 7717
 TAIL_LINES = 400          # lines of scrollback kept in the live view
 POLL_SECONDS = 0.4        # screen poll interval per viewer
+REBIND_SECONDS = 30       # how often to recheck the Tailscale address
 STATIC = Path(__file__).parent / "static"
 
 KEYMAP = {
@@ -180,6 +181,39 @@ async def _read_lines(session, start, count):
     }
 
 
+def window_for_session(app, session_id):
+    for window in app.terminal_windows:
+        for tab in window.tabs:
+            for session in tab.sessions:
+                if session.session_id == session_id:
+                    return window
+    return None
+
+
+async def new_session(kind, near_session_id=None):
+    """Open a tab or a window and hand back the session inside it.
+
+    A new tab goes in the window of the session the phone was last watching,
+    falling back to iTerm2's current window — and to a new window when there
+    is none (every window closed, iTerm2 sitting in the dock).
+    """
+    app = await bridge.app(refresh=True)
+    window = None
+    if kind == "tab":
+        window = (window_for_session(app, near_session_id) if near_session_id
+                  else None) or app.current_window
+    if window is None:
+        window = await iterm2.Window.async_create(await bridge.connection())
+        if window is None:
+            raise RuntimeError("iTerm2 didn't open a window")
+        tab = window.tabs[0]
+    else:
+        tab = await window.async_create_tab()
+        if tab is None:
+            raise RuntimeError("iTerm2 didn't open a tab")
+    return tab.sessions[0]
+
+
 async def activate_session(session):
     """Bring a session to the front on the Mac: select the pane, select its
     tab, raise its window, and put iTerm2 itself in the foreground."""
@@ -209,6 +243,24 @@ async def index(_request):
 async def api_sessions(_request):
     try:
         return web.json_response({"windows": await list_sessions()})
+    except Exception as exc:
+        bridge.reset()
+        return web.json_response(error_payload(exc), status=502)
+
+
+async def api_new(request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    kind = data.get("kind", "tab")
+    if kind not in ("tab", "window"):
+        return web.json_response({"message": "kind must be tab or window"},
+                                 status=400)
+    try:
+        session = await new_session(kind, data.get("session_id"))
+        title = await session_var(session, "autoName") or session.name or "shell"
+        return web.json_response({"session_id": session.session_id, "title": title})
     except Exception as exc:
         bridge.reset()
         return web.json_response(error_payload(exc), status=502)
@@ -337,11 +389,47 @@ def tailscale_ip():
     return None
 
 
+async def bind(runner, host, sites):
+    site = web.TCPSite(runner, host, PORT)
+    await site.start()
+    sites[host] = site
+    print(f"termdeck listening on http://{host}:{PORT}", flush=True)
+
+
+async def rebind_watcher(runner, sites):
+    """Keep the Tailscale binding current.
+
+    Sleeping the Mac, or Tailscale reconnecting, can hand it a different
+    tailnet address; the socket bound to the old one still exists but nothing
+    can reach it, and the process never crashed so no supervisor would notice.
+    Check periodically and move the binding.
+    """
+    loop = asyncio.get_running_loop()
+    while True:
+        await asyncio.sleep(REBIND_SECONDS)
+        try:
+            # tailscale_ip() shells out — keep it off the event loop.
+            ip = await loop.run_in_executor(None, tailscale_ip)
+            if not ip or ip in sites:
+                continue
+            for host, site in list(sites.items()):
+                if host != "127.0.0.1":
+                    await site.stop()
+                    sites.pop(host, None)
+                    print(f"tailscale address {host} went away", flush=True)
+            await bind(runner, ip, sites)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"rebind failed: {exc}", file=sys.stderr, flush=True)
+
+
 def make_app():
     app = web.Application()
     app.router.add_get("/", index)
     app.router.add_get("/api/sessions", api_sessions)
     app.router.add_get("/api/scrollback", api_scrollback)
+    app.router.add_post("/api/new", api_new)
     app.router.add_get("/api/ws", ws_handler)
     app.router.add_static("/static", STATIC)
     return app
@@ -355,25 +443,24 @@ async def main():
     ts_ip = tailscale_ip()
     if ts_ip:
         hosts.append(ts_ip)
-    bound, in_use = 0, False
+    sites, in_use = {}, False
     for host in hosts:
         try:
-            await web.TCPSite(runner, host, PORT).start()
-            bound += 1
-            print(f"termdeck listening on http://{host}:{PORT}", flush=True)
+            await bind(runner, host, sites)
         except OSError as exc:
             in_use = in_use or exc.errno == errno.EADDRINUSE
             print(f"could not bind {host}:{PORT}: {exc}", file=sys.stderr, flush=True)
-    if not bound:
+    if not sites:
         if in_use:
             print("termdeck is already running (or something else holds port "
-                  f"{PORT}). Stop it first: launchctl bootout "
-                  "gui/$(id -u)/com.carlitos.termdeck", file=sys.stderr, flush=True)
+                  f"{PORT}). Stop it first: pm2 stop termdeck, or launchctl "
+                  "bootout gui/$(id -u)/com.carlitos.termdeck",
+                  file=sys.stderr, flush=True)
         sys.exit(1)
     if not ts_ip:
-        print("warning: no Tailscale IP found; serving on localhost only",
+        print("warning: no Tailscale IP found; will keep checking",
               file=sys.stderr, flush=True)
-    await asyncio.Event().wait()
+    await rebind_watcher(runner, sites)
 
 
 if __name__ == "__main__":

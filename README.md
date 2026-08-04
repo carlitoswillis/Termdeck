@@ -52,6 +52,31 @@ land in `logs/termdeck.log` and `logs/termdeck.err.log`.
 
 The server binds only to localhost and the Tailscale interface — never LAN/public.
 
+## Surviving sleep
+
+Sleep doesn't kill the process, so a supervisor has nothing to restart — but
+two things can quietly break underneath it, and both heal themselves:
+
+- **The tailnet address changes.** The socket bound to the old one still
+  exists and nothing can reach it. The server rechecks every 30s and moves the
+  binding, logging when it does; that also covers starting before Tailscale is
+  up.
+- **The iTerm2 API connection drops.** Any failed call resets the connection
+  and the next poll reconnects, so the phone reconnects on its own.
+
+To make pm2 itself survive a reboot, run these once:
+
+```
+pm2 startup      # prints a command — run that command
+pm2 save         # ./install.sh already does this
+```
+
+`pm2 startup` needs your privileges, which is why the installer prints it
+instead of running it. One caveat if node came from nvm: the launchd entry
+`pm2 startup` writes points at the node binary in use at that moment, so
+switching node versions later can break resurrection. Re-run `pm2 startup`
+after switching, or install pm2 on a system node.
+
 ## Tests
 
 ```
@@ -70,9 +95,15 @@ They run against a fake iTerm2 layer, so no Mac or running iTerm2 is needed.
     `{type:"input", text}` and `{type:"key", name}` to type into the session,
     and `{type:"activate"}` to bring it to the front on the Mac
   - `GET /api/scrollback` — older history for "Load earlier"
-- `static/index.html` — the phone UI: session list → live terminal view with
-  key row (Esc/Tab/arrows/^C…), Send box (appends Enter), font size, wrap,
-  load-earlier, follow-focus.
+  - `POST /api/new` — `{kind: "tab"|"window", session_id}` opens one and
+    returns the session in it
+- `static/index.html` — the phone UI: session list (with **+ Tab** /
+  **+ Window**) → live terminal view with key row (Esc/Tab/arrows/^C…), Send
+  box (appends Enter), font size, wrap, load-earlier, follow-focus.
+
+**+ Tab** opens beside the session you were last watching — the window on your
+phone, not whatever iTerm2 has in front on the Mac — and drops you straight
+into it. With no windows left open at all, it opens one.
 
 ## Following your phone's focus
 
