@@ -70,6 +70,9 @@ class FakeSession:
         self.streamer_error = None
         self.resizes = []
         self.resize_error = None
+        self.job = "zsh"
+        self.cursor = (0, 0)          # (x, y), y relative to the screen top
+        self.cursor_error = None
 
     async def async_get_line_info(self):
         return self.info
@@ -85,8 +88,16 @@ class FakeSession:
                 for n in range(lo, max(lo, hi))]
 
     async def async_get_variable(self, name):
-        return {"jobName": "zsh", "path": "/Users/x/work", "tty": "/dev/ttys001",
-                "autoName": "shell"}.get(name)
+        return {"jobName": self.job, "path": "/Users/x/work",
+                "tty": "/dev/ttys001", "autoName": "shell"}.get(name)
+
+    async def async_get_screen_contents(self):
+        if self.cursor_error:
+            raise self.cursor_error
+        first = self.info.overflow + self.info.scrollback_buffer_height
+        return SimpleNamespace(cursor_coord=SimpleNamespace(x=self.cursor[0],
+                                                            y=self.cursor[1]),
+                               number_of_lines_above_screen=first)
 
     async def async_send_text(self, text, suppress_broadcast=False):
         self.sent.append(text)

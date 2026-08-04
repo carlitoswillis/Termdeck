@@ -16,7 +16,8 @@ async def test_sessions_lists_windows_tabs_and_panes(client, fake_iterm2):
     windows = (await resp.json())["windows"]
     pane = windows[0]["tabs"][0]["sessions"][0]
     assert pane == {"id": "sess-1", "title": "shell", "job": "zsh",
-                    "path": "/Users/x/work", "tty": "/dev/ttys001"}
+                    "path": "/Users/x/work", "tty": "/dev/ttys001",
+                    "lines": 15, "busy": False}
     assert windows[0]["tabs"][0]["active"] is True
     assert fake_iterm2.app.refreshes == 1   # list view always sees new tabs
 

@@ -210,6 +210,27 @@ at a comfortable size for reading logs, where line breaks don't matter.
 Pinch-zoom is enabled too — the fastest way to read one dense corner without
 changing any setting.
 
+## Knowing which pane needs you
+
+With several panes running, the question isn't what exists, it's which one
+wants attention. Each card carries a dot:
+
+| dot | meaning |
+| --- | --- |
+| amber | still running something — the job name is shown |
+| green | **finished**: it was running, now it's back at a prompt |
+| blue | printed something since you last looked at it |
+
+"Running" is the foreground job not being a shell, which costs nothing extra —
+the list already fetched it. "New output" compares the session's total line
+count (which only ever goes up) against what your device saw last time, so the
+server keeps no per-device state and two phones don't clear each other's
+marks. Opening a session clears its dot.
+
+The cursor is drawn where iTerm2 says it is, which matters most in live
+keystroke mode — otherwise you're typing into a text dump with no idea where
+the characters are going.
+
 ## One URL per session
 
 Every session has its own address — `…:7717/#s=<session id>` — so a refresh

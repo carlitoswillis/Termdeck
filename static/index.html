@@ -158,6 +158,23 @@
     color: #cfd1d6;
   }
   #screen.wrap { white-space: pre-wrap; word-break: break-all; width: auto; }
+  .cursor {
+    background: var(--accent);
+    color: #0b0c0e;
+    animation: blink 1.1s steps(2, start) infinite;
+  }
+  @keyframes blink { 50% { background: #3a4a63; color: #cfd1d6; } }
+  .dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  .dot.new { background: var(--accent); }
+  .dot.done { background: #6cc46c; }
+  .dot.busy { background: #c9a227; }
   #status {
     flex: none;
     font-size: 11px;
@@ -268,7 +285,11 @@ let pendingFrame = null, applying = false, loading = false;
 let follow = localStorage.getItem("follow") !== "0";   // on unless turned off
 let fit = localStorage.getItem("fit") === "1";
 let cols = 0;             // the pane's size in cells, from the last frame
-let rows = 0, paneCols = 0, paneRows = 0, reshaped = false;
+let rows = 0, paneCols = 0, paneRows = 0, reshaped = false, cursor = null;
+/* What each session's line count was when we last looked at it, and which
+   ones were busy last time the list refreshed. */
+let seen = JSON.parse(localStorage.getItem("seen") || "{}");
+let wasBusy = {}, finished = {};
 let pendingActivate = false;
 let fontSize = +(localStorage.getItem("fontSize") || 12);
 let listTimer = null;
@@ -303,6 +324,26 @@ function showNotice(err) {
   else n.append(bold("Error:"), " " + (err.message || "unknown"));
   $("list").replaceChildren(n);
 }
+function markSeen(id, total) {
+  if (!id || !total) return;
+  seen[id] = total;
+  finished[id] = false;
+  localStorage.setItem("seen", JSON.stringify(seen));
+}
+/* What this pane wants you to know, at a glance:
+   busy   — still running something
+   done   — was running, now back at a prompt: it finished while you were away
+   new    — printed something since you last looked at it */
+function activityOf(s) {
+  if (wasBusy[s.id] && !s.busy) finished[s.id] = true;
+  wasBusy[s.id] = s.busy;
+  if (seen[s.id] === undefined) seen[s.id] = s.lines;   // first sighting
+  if (finished[s.id]) return ["done", "finished"];
+  if (s.busy) return ["busy", s.job];
+  if (s.lines > seen[s.id]) return ["new", "new output"];
+  return [null, ""];
+}
+
 function render(windows) {
   const frag = document.createDocumentFragment();
   let count = 0;
@@ -317,10 +358,17 @@ function render(windows) {
         titles[s.id] = s.title;
         const card = document.createElement("button");
         card.className = "card";
-        const meta = [s.job, s.path.replace(/^\/Users\/[^/]+/, "~"), s.tty.replace("/dev/","")]
-          .filter(Boolean).join(" · ");
+        const [mark, note] = activityOf(s);
+        const meta = [note || s.job, s.path.replace(/^\/Users\/[^/]+/, "~"),
+                      s.tty.replace("/dev/", "")].filter(Boolean).join(" · ");
         card.innerHTML = `<div class="title"></div><div class="meta"></div>`;
-        card.querySelector(".title").textContent = `Tab ${tab.index + 1} — ${s.title}`;
+        const title = card.querySelector(".title");
+        if (mark) {
+          const dot = document.createElement("span");
+          dot.className = "dot " + mark;
+          title.appendChild(dot);
+        }
+        title.appendChild(document.createTextNode(`Tab ${tab.index + 1} — ${s.title}`));
         card.querySelector(".meta").textContent = meta;
         card.onclick = () => openSession(s.id, s.title);
         frag.appendChild(card);
@@ -383,7 +431,8 @@ function openSession(id, title, push = true) {
   currentId = id; currentTitle = title; lastId = id;
   hist = []; histStart = 0; firstLine = 0; totalLines = 0; pendingFrame = null;
   pendingActivate = follow;   // only on a deliberate open, never on reconnect
-  paneCols = 0; paneRows = 0; reshaped = false;
+  paneCols = 0; paneRows = 0; reshaped = false; cursor = null;
+  finished[id] = false;
   $("reshape").classList.remove("on");
   $("term-title").textContent = title;
   $("screen").textContent = "";
@@ -479,15 +528,39 @@ function segmentHTML(text, fg, bg, flags) {
   if (flags & B_FAINT) css.push("opacity:.65");
   return css.length ? `<span style="${css.join(";")}">${esc(text)}</span>` : esc(text);
 }
-function rowHTML(row) {
-  if (!row.r) return esc(row.t);
+const cursorHTML = ch => `<span class="cursor">${esc(ch || " ")}</span>`;
+
+/* `col` is where the cursor sits on this line, or -1. It has to be spliced
+   into whatever run covers it, so styling and the cursor coexist. */
+function rowHTML(row, col = -1) {
+  const text = row.t;
+  if (!row.r) {
+    if (col < 0) return esc(text);
+    return esc(text.slice(0, col)) + cursorHTML(text[col]) +
+           esc(text.slice(col + 1));
+  }
   let out = "", at = 0;
   for (const [cells, fg, bg, flags] of row.r) {
-    const seg = row.t.slice(at, at + cells);
-    at += cells;
-    if (seg) out += segmentHTML(seg, fg, bg, flags);
+    const end = at + cells;
+    if (col >= at && col < end) {
+      out += segmentHTML(text.slice(at, col), fg, bg, flags) +
+             cursorHTML(text[col]) +
+             segmentHTML(text.slice(col + 1, end), fg, bg, flags);
+    } else {
+      const seg = text.slice(at, end);
+      if (seg) out += segmentHTML(seg, fg, bg, flags);
+    }
+    at = end;
   }
-  return out + (at < row.t.length ? esc(row.t.slice(at)) : "");
+  if (at < text.length) {
+    out += col >= at
+      ? esc(text.slice(at, col)) + cursorHTML(text[col]) + esc(text.slice(col + 1))
+      : esc(text.slice(at));
+  } else if (col >= at) {
+    // Past the end of the line — the usual case at a prompt.
+    out += esc(" ".repeat(col - at)) + cursorHTML(" ");
+  }
+  return out;
 }
 /* One frame's lines as rows: text plus its style runs, if it has any. */
 function rowsOf(m) {
@@ -514,6 +587,8 @@ async function applyFrame(m) {
   firstLine = m.first || 0;
   totalLines = m.total;
   if (m.rows) rows = m.rows;
+  cursor = m.cursor || null;
+  if (m.total) markSeen(currentId, m.total);
   if (m.cols && m.cols !== cols) { cols = m.cols; applyFit(); }
   // Remember the shape the pane had before we touched it.
   if (m.cols && !paneCols && !reshaped) { paneCols = m.cols; paneRows = m.rows; }
@@ -556,7 +631,8 @@ async function fetchRange(start, count) {
 function updateScreen() {
   const wrap = $("screen-wrap");
   const pinned = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 60;
-  $("screen").innerHTML = hist.map(rowHTML).join("\n");
+  $("screen").innerHTML = hist.map((row, i) => rowHTML(
+    row, cursor && cursor[0] === histStart + i ? cursor[1] : -1)).join("\n");
   $("load-earlier").style.display = histStart > firstLine ? "block" : "none";
   if (pinned) wrap.scrollTop = wrap.scrollHeight;
 }

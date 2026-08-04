@@ -139,6 +139,21 @@ async def session_var(session, name):
         return None
 
 
+# Names that mean "sitting at a prompt" rather than "running something".
+SHELLS = {"zsh", "bash", "sh", "fish", "dash", "tcsh", "csh", "ksh", "login"}
+
+
+async def session_lines(session):
+    """How many lines this session has ever produced. It only goes up, so the
+    phone can tell what has printed something since it last looked."""
+    try:
+        info = await session.async_get_line_info()
+        return (info.overflow + info.scrollback_buffer_height
+                + info.mutable_area_height)
+    except Exception:
+        return 0
+
+
 async def list_sessions():
     app = await bridge.app(refresh=True)
     windows = []
@@ -157,6 +172,10 @@ async def list_sessions():
                     "job": job,
                     "path": path,
                     "tty": tty,
+                    "lines": await session_lines(session),
+                    # A shell as the foreground job means it's back at the
+                    # prompt — whatever was running has finished.
+                    "busy": bool(job) and job.lstrip("-") not in SHELLS,
                 })
             tabs.append({"index": t, "sessions": sessions,
                          "active": tab.tab_id == window.current_tab.tab_id
@@ -231,6 +250,20 @@ def line_runs(line):
     return runs or None
 
 
+async def cursor_position(session):
+    """Where the cursor is, as [absolute line, column].
+
+    cursor_coord is relative to the top of the screen, so it needs the count
+    of lines above the screen to line up with everything else here.
+    """
+    try:
+        contents = await session.async_get_screen_contents()
+        coord = contents.cursor_coord
+        return [contents.number_of_lines_above_screen + coord.y, coord.x]
+    except Exception:
+        return None            # a cursor is never worth losing the text over
+
+
 def line_payload(lines):
     """Text plus a sparse map of line index -> style runs."""
     styles = {}
@@ -256,6 +289,7 @@ async def _read_lines(session, start, count):
             begin = max(first, min(begin, total))
             count = min(count, total - begin)
             lines = await session.async_get_contents(begin, count) if count else []
+            cursor = await cursor_position(session)
     # The pane's real width in cells, so the phone can size text to fit it
     # rather than guessing from the longest line it happens to have.
     grid = getattr(session, "grid_size", None)
@@ -266,6 +300,7 @@ async def _read_lines(session, start, count):
         "total": total,
         "cols": getattr(grid, "width", 0) or 0,
         "rows": getattr(grid, "height", 0) or 0,
+        "cursor": cursor,
         "lines": text,
         "styles": styles,
     }
