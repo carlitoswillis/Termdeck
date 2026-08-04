@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>termdeck</title>
+<style>
+  :root {
+    --bg: #101114;
+    --panel: #17181c;
+    --border: #26272c;
+    --text: #d6d7db;
+    --dim: #82848b;
+    --accent: #6ea8fe;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.45 -apple-system, system-ui, sans-serif;
+    overscroll-behavior: none;
+  }
+  button {
+    font: inherit;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 6px 11px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  button:active { background: #202127; }
+
+  /* ---- session list ---- */
+  #list-view {
+    max-width: 640px;
+    margin: 0 auto;
+    padding: calc(14px + env(safe-area-inset-top)) 14px calc(24px + env(safe-area-inset-bottom));
+  }
+  #list-view h1 {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: .02em;
+    margin-bottom: 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  #list-view h1 small { color: var(--dim); font-weight: 400; font-size: 12px; }
+  .window-label {
+    color: var(--dim);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    margin: 14px 2px 6px;
+  }
+  .card {
+    width: 100%;
+    text-align: left;
+    display: block;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+  }
+  .card .title { font-weight: 600; font-size: 14px; }
+  .card .meta {
+    color: var(--dim);
+    font-size: 12px;
+    font-family: var(--mono);
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .notice {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    color: var(--dim);
+    font-size: 13px;
+    margin-top: 12px;
+  }
+  .notice b { color: var(--text); }
+
+  /* ---- terminal view ---- */
+  #term-view {
+    display: none;
+    flex-direction: column;
+    height: 100dvh;
+    padding-top: env(safe-area-inset-top);
+  }
+  #term-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    flex: none;
+  }
+  #term-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #term-bar button { padding: 5px 9px; font-size: 12px; }
+  #screen-wrap {
+    flex: 1;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    background: #0b0c0e;
+  }
+  #load-earlier {
+    display: block;
+    margin: 8px auto;
+    font-size: 12px;
+    color: var(--dim);
+  }
+  #screen {
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.32;
+    padding: 4px 8px 8px;
+    white-space: pre;
+    min-width: 100%;
+    width: max-content;
+    color: #cfd1d6;
+  }
+  #screen.wrap { white-space: pre-wrap; word-break: break-all; width: auto; }
+  #status {
+    flex: none;
+    font-size: 11px;
+    color: var(--dim);
+    padding: 2px 10px;
+    border-top: 1px solid var(--border);
+    min-height: 17px;
+  }
+  #keys {
+    flex: none;
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding: 7px 10px;
+    border-top: 1px solid var(--border);
+    scrollbar-width: none;
+  }
+  #keys::-webkit-scrollbar { display: none; }
+  #keys button {
+    flex: none;
+    font-size: 12px;
+    font-family: var(--mono);
+    padding: 6px 10px;
+  }
+  #input-bar {
+    flex: none;
+    display: flex;
+    gap: 8px;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+  }
+  #input-bar input {
+    flex: 1;
+    min-width: 0;
+    font: 14px var(--mono);
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 9px 11px;
+    outline: none;
+  }
+  #input-bar input:focus { border-color: #3a3c44; }
+  #send { color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<div id="list-view">
+  <h1>termdeck <small id="list-status"></small></h1>
+  <div id="list"></div>
+</div>
+
+<div id="term-view">
+  <div id="term-bar">
+    <button id="back">‹ Back</button>
+    <div id="term-title"></div>
+    <button id="font-minus">A−</button>
+    <button id="font-plus">A+</button>
+    <button id="wrap-toggle">Wrap</button>
+  </div>
+  <div id="screen-wrap">
+    <button id="load-earlier">Load earlier</button>
+    <pre id="screen"></pre>
+  </div>
+  <div id="status"></div>
+  <div id="keys"></div>
+  <div id="input-bar">
+    <input id="input" type="text" autocomplete="off" autocorrect="off"
+           autocapitalize="off" spellcheck="false" placeholder="Type, then Send (adds ⏎)">
+    <button id="send">Send</button>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const KEYS = [
+  ["esc","Esc"],["tab","Tab"],["shift-tab","⇧Tab"],["up","↑"],["down","↓"],
+  ["left","←"],["right","→"],["enter","⏎"],["ctrl-c","^C"],["ctrl-d","^D"],
+  ["ctrl-z","^Z"],["ctrl-r","^R"],["ctrl-l","^L"],["ctrl-u","^U"],
+  ["backspace","⌫"],["pgup","PgUp"],["pgdn","PgDn"],
+];
+
+let ws = null, currentId = null, currentTitle = "";
+let olderLines = [], olderStart = null, liveStart = 0, liveLines = [], fontSize = 12;
+let listTimer = null;
+
+/* ---------------- session list ---------------- */
+async function refreshList() {
+  try {
+    const r = await fetch("/api/sessions");
+    const data = await r.json();
+    if (!r.ok) {
+      $("list").innerHTML = "";
+      $("list-status").textContent = "";
+      showNotice(data);
+      return;
+    }
+    $("list-status").textContent = new Date().toLocaleTimeString();
+    render(data.windows || []);
+  } catch (e) {
+    showNotice({message: String(e)});
+  }
+}
+function showNotice(err) {
+  const n = document.createElement("div");
+  n.className = "notice";
+  n.innerHTML = err.hint
+    ? `<b>iTerm2 API unreachable.</b><br>${err.hint}`
+    : `<b>Error:</b> ${err.message || "unknown"}`;
+  $("list").replaceChildren(n);
+}
+function render(windows) {
+  const frag = document.createDocumentFragment();
+  let count = 0;
+  windows.forEach(w => {
+    const label = document.createElement("div");
+    label.className = "window-label";
+    label.textContent = `Window ${w.index + 1}`;
+    frag.appendChild(label);
+    w.tabs.forEach(tab => {
+      tab.sessions.forEach(s => {
+        count++;
+        const card = document.createElement("button");
+        card.className = "card";
+        const meta = [s.job, s.path.replace(/^\/Users\/[^/]+/, "~"), s.tty.replace("/dev/","")]
+          .filter(Boolean).join(" · ");
+        card.innerHTML = `<div class="title"></div><div class="meta"></div>`;
+        card.querySelector(".title").textContent = `Tab ${tab.index + 1} — ${s.title}`;
+        card.querySelector(".meta").textContent = meta;
+        card.onclick = () => openSession(s.id, s.title);
+        frag.appendChild(card);
+      });
+    });
+  });
+  if (!count) {
+    const n = document.createElement("div");
+    n.className = "notice";
+    n.textContent = "No iTerm2 sessions found.";
+    frag.appendChild(n);
+  }
+  $("list").replaceChildren(frag);
+}
+
+/* ---------------- terminal view ---------------- */
+function openSession(id, title) {
+  currentId = id; currentTitle = title;
+  olderLines = []; olderStart = null; liveLines = [];
+  $("term-title").textContent = title;
+  $("screen").textContent = "";
+  $("status").textContent = "connecting…";
+  $("list-view").style.display = "none";
+  $("term-view").style.display = "flex";
+  clearInterval(listTimer);
+  connect();
+}
+function closeSession() {
+  if (ws) { ws.onclose = null; ws.close(); ws = null; }
+  currentId = null;
+  $("term-view").style.display = "none";
+  $("list-view").style.display = "block";
+  refreshList();
+  listTimer = setInterval(refreshList, 5000);
+}
+function connect() {
+  if (!currentId) return;
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/api/ws`);
+  ws.onopen = () => ws.send(JSON.stringify({type: "watch", session_id: currentId}));
+  ws.onmessage = ev => {
+    const m = JSON.parse(ev.data);
+    if (m.type === "screen") {
+      liveStart = m.start;
+      liveLines = m.lines;
+      updateScreen();
+      $("status").textContent = `${currentTitle} · ${m.total} lines`;
+    } else if (m.type === "gone") {
+      $("status").textContent = "session closed";
+    } else if (m.type === "error") {
+      $("status").textContent = m.hint || m.message;
+    }
+  };
+  ws.onclose = () => {
+    if (!currentId) return;
+    $("status").textContent = "reconnecting…";
+    setTimeout(connect, 1500);
+  };
+}
+function updateScreen() {
+  const wrap = $("screen-wrap");
+  const pinned = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 60;
+  const older = olderLines.length ? olderLines.join("\n") + "\n" : "";
+  $("screen").textContent = older + liveLines.join("\n");
+  if (pinned) wrap.scrollTop = wrap.scrollHeight;
+}
+async function loadEarlier() {
+  const boundary = olderStart === null ? liveStart : olderStart;
+  if (boundary <= 0 || !currentId) return;
+  const count = Math.min(400, boundary);
+  const start = boundary - count;
+  const r = await fetch(`/api/scrollback?session_id=${encodeURIComponent(currentId)}&start=${start}&count=${count}`);
+  if (!r.ok) return;
+  const data = await r.json();
+  const wrap = $("screen-wrap"), before = wrap.scrollHeight;
+  olderLines = data.lines.concat(olderLines);
+  olderStart = start;
+  updateScreen();
+  wrap.scrollTop += wrap.scrollHeight - before;
+}
+function sendInput() {
+  const box = $("input");
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({type: "input", text: box.value + "\r"}));
+  box.value = "";
+}
+function sendKey(name) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({type: "key", name}));
+}
+
+/* ---------------- wire up ---------------- */
+$("back").onclick = closeSession;
+$("send").onclick = sendInput;
+$("input").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); sendInput(); }
+});
+$("load-earlier").onclick = loadEarlier;
+$("font-minus").onclick = () => { fontSize = Math.max(8, fontSize - 1); $("screen").style.fontSize = fontSize + "px"; };
+$("font-plus").onclick = () => { fontSize = Math.min(20, fontSize + 1); $("screen").style.fontSize = fontSize + "px"; };
+$("wrap-toggle").onclick = () => $("screen").classList.toggle("wrap");
+KEYS.forEach(([name, label]) => {
+  const b = document.createElement("button");
+  b.textContent = label;
+  b.onclick = () => sendKey(name);
+  $("keys").appendChild(b);
+});
+
+refreshList();
+listTimer = setInterval(refreshList, 5000);
+</script>
+</body>
+</html>

@@ -1,0 +1,66 @@
+could not bind 127.0.0.1:7717: [Errno 48] error while attempting to bind on address ('127.0.0.1', 7717): [errno 48] address already in use
+could not bind 100.72.206.61:7717: [Errno 48] error while attempting to bind on address ('100.72.206.61', 7717): [errno 48] address already in use
+Exception in callback RequestHandler.connection_made()
+handle: <Handle RequestHandler.connection_made()>
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/events.py", line 94, in _run
+    self._context.run(self._callback, *self._args)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/carlitoswillis/workspace/termdeck/.venv/lib/python3.14/site-packages/aiohttp/web_protocol.py", line 364, in connection_made
+    tcp_keepalive(real_transport)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/carlitoswillis/workspace/termdeck/.venv/lib/python3.14/site-packages/aiohttp/tcp_helpers.py", line 16, in tcp_keepalive
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/trsock.py", line 74, in setsockopt
+    self._sock.setsockopt(*args, **kwargs)
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+OSError: [Errno 22] Invalid argument
+Exception in callback RequestHandler.connection_made()
+handle: <Handle RequestHandler.connection_made()>
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/events.py", line 94, in _run
+    self._context.run(self._callback, *self._args)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/carlitoswillis/workspace/termdeck/.venv/lib/python3.14/site-packages/aiohttp/web_protocol.py", line 364, in connection_made
+    tcp_keepalive(real_transport)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/carlitoswillis/workspace/termdeck/.venv/lib/python3.14/site-packages/aiohttp/tcp_helpers.py", line 16, in tcp_keepalive
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/trsock.py", line 74, in setsockopt
+    self._sock.setsockopt(*args, **kwargs)
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+OSError: [Errno 22] Invalid argument
+Exception in callback RequestHandler.connection_made()
+handle: <Handle RequestHandler.connection_made()>
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/events.py", line 94, in _run
+    self._context.run(self._callback, *self._args)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/carlitoswillis/workspace/termdeck/.venv/lib/python3.14/site-packages/aiohttp/web_protocol.py", line 364, in connection_made
+    tcp_keepalive(real_transport)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/carlitoswillis/workspace/termdeck/.venv/lib/python3.14/site-packages/aiohttp/tcp_helpers.py", line 16, in tcp_keepalive
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/trsock.py", line 74, in setsockopt
+    self._sock.setsockopt(*args, **kwargs)
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+OSError: [Errno 22] Invalid argument
+Exception in callback RequestHandler.connection_made()
+handle: <Handle RequestHandler.connection_made()>
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/events.py", line 94, in _run
+    self._context.run(self._callback, *self._args)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/carlitoswillis/workspace/termdeck/.venv/lib/python3.14/site-packages/aiohttp/web_protocol.py", line 364, in connection_made
+    tcp_keepalive(real_transport)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/carlitoswillis/workspace/termdeck/.venv/lib/python3.14/site-packages/aiohttp/tcp_helpers.py", line 16, in tcp_keepalive
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/trsock.py", line 74, in setsockopt
+    self._sock.setsockopt(*args, **kwargs)
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+OSError: [Errno 22] Invalid argument
