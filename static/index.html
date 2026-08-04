@@ -125,6 +125,15 @@
     margin-top: 12px;
   }
   .notice b { color: var(--text); }
+  #banner {
+    background: #2a2013;
+    border: 1px solid #4a3a1c;
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: #e8c37a;
+    font-size: 13px;
+    margin-bottom: 10px;
+  }
 
   /* ---- terminal view ---- */
   /* Fixed, with its height driven by visualViewport: on a phone the on-screen
@@ -252,6 +261,7 @@
 
 <div id="list-view">
   <h1>termdeck <small id="list-status"></small></h1>
+  <div id="banner" hidden></div>
   <div id="list-actions">
     <button id="new-window">+ Window</button>
   </div>
@@ -297,6 +307,7 @@ const KEYS = [
 ];
 const SENTINEL = "⁣";   // invisible, but something Backspace can delete
 
+const NEEDS_VERSION = 13;   // keep in step with VERSION in server.py
 const CHUNK = 400;        // lines per "Load earlier" request
 const MAX_GAP = 5000;     // bigger gaps aren't worth stitching back together
 const MAX_HISTORY = 20000;// keep the DOM from growing without bound
@@ -323,7 +334,7 @@ let listTimer = null;
 async function refreshList() {
   try {
     const r = await fetch("/api/sessions");
-    const data = await r.json();
+    const data = await readBody(r);
     if (!r.ok) {
       $("list").innerHTML = "";
       $("list-status").textContent = "";
@@ -335,6 +346,29 @@ async function refreshList() {
   } catch (e) {
     showNotice({message: String(e)});
   }
+}
+/* Error bodies aren't always JSON — aiohttp's own 404 and 500 pages are
+   plain text, and a locked server answers with the login page. Parsing them
+   blind produced "SyntaxError: The string did not match the expected
+   pattern", which says nothing about what went wrong. */
+async function readBody(r) {
+  const text = await r.text();
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    if (r.status === 404) {
+      return {message: "this server doesn't know that request yet — it's " +
+                       "running older code than this page. On the Mac: " +
+                       "./install.sh"};
+    }
+    if (r.status === 401) return {message: "session expired — reload to log in"};
+    return {message: `HTTP ${r.status} ${r.statusText}`.trim()};
+  }
+}
+function banner(text) {
+  const el = $("banner");
+  el.textContent = text || "";
+  el.hidden = !text;
 }
 function showNotice(err) {
   const n = document.createElement("div");
@@ -369,14 +403,29 @@ function activityOf(s) {
   return [null, ""];
 }
 
+let listSignature = "";
 function render(windows) {
+  // Work out the activity marks first: they update state, and they belong in
+  // the signature.
+  const marks = {};
+  windows.forEach(w => w.tabs.forEach(t => t.sessions.forEach(s => {
+    marks[s.id] = activityOf(s);
+  })));
+  const signature = JSON.stringify(windows.map(w => [w.id, w.title,
+    w.tabs.map(t => [t.id, t.sessions.map(s => [s.id, s.title, marks[s.id]])])]));
+  // Rebuilding the list every 5s tears the buttons out from under a finger
+  // mid-tap, which reads as "the button does nothing".
+  if (signature === listSignature) return;
+  listSignature = signature;
+
   const frag = document.createDocumentFragment();
   let count = 0;
   windows.forEach(w => {
     const label = document.createElement("div");
     label.className = "window-label";
     const name = document.createElement("span");
-    name.textContent = `Window ${w.index + 1}`;
+    name.textContent = w.title ? `Window ${w.index + 1} · ${w.title}`
+                               : `Window ${w.index + 1}`;
     // Per-window, so which window a tab opens in is never a guess.
     const add = document.createElement("button");
     add.textContent = "+ Tab";
@@ -393,7 +442,7 @@ function render(windows) {
       tab.sessions.forEach(s => {
         count++;
         titles[s.id] = s.title;
-        const [mark, note] = activityOf(s);
+        const [mark, note] = marks[s.id];
         const card = document.createElement("div");
         card.className = "card";
 
@@ -441,9 +490,9 @@ async function closeThing(kind, id, question) {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({kind, id}),
     });
-    if (!r.ok) showNotice(await r.json());
+    banner(r.ok ? "" : (await readBody(r)).message);
   } catch (e) {
-    showNotice({message: String(e)});
+    banner(String(e));
   }
   refreshList();
 }
@@ -458,11 +507,11 @@ async function createSession(kind, windowId, btn) {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({kind, session_id: lastId, window_id: windowId}),
     });
-    const data = await r.json();
-    if (r.ok) openSession(data.session_id, data.title);
-    else showNotice(data);
+    const data = await readBody(r);
+    if (r.ok) { banner(""); openSession(data.session_id, data.title); }
+    else banner(data.message);
   } catch (e) {
-    showNotice({message: String(e)});
+    banner(String(e));
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -1012,8 +1061,23 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
+/* A pull updates static files immediately but leaves the old Python running
+   until something restarts it, which looks like features silently not
+   working. Ask the server what it is. */
+async function checkVersion() {
+  try {
+    const r = await fetch("/healthz");
+    const { version } = await r.json();
+    if (version < NEEDS_VERSION) {
+      banner(`The termdeck server is running older code than this page ` +
+             `(v${version}, needs v${NEEDS_VERSION}). On the Mac: ./install.sh`);
+    }
+  } catch (e) { /* old servers answered "ok" in plain text; never mind */ }
+}
+
 /* Land on the session in the URL, if there is one. */
 async function boot() {
+  checkVersion();
   const id = hashSession();
   await refreshList();
   listTimer = setInterval(refreshList, 5000);

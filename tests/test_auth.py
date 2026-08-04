@@ -100,10 +100,13 @@ async def test_the_websocket_is_not_a_back_door(locked):
 
 
 async def test_healthz_stays_open_for_the_installer(locked):
+    """Unauthenticated on purpose: the installer checks the port with it, and
+    the page reads the version from it to notice a server left behind by a
+    pull that never restarted anything."""
     resp = await locked.get("/healthz")
 
     assert resp.status == 200
-    assert (await resp.text()).strip() == "ok"
+    assert await resp.json() == {"ok": True, "version": server.VERSION}
 
 
 async def test_without_a_password_nothing_is_locked(client):

@@ -96,11 +96,19 @@ two things can quietly break underneath it, and both heal themselves:
 
 ## Updating
 
-`git pull` on its own restarts nothing — the running process already holds the
-old code. pm2 watches `server.py`, so a pull that changes it restarts termdeck
-within a second; `static/` needs no restart because those files are read from
-disk per request (just refresh the page). Two things the watcher can't do for
-you:
+**After pulling, run `./install.sh`** unless you're sure pm2 is watching. A
+plain `pm2 restart` does *not* re-read `ecosystem.config.js`, so a copy
+installed before the file watcher existed never picked it up — and then a pull
+updates `static/` instantly (those files are read per request) while Python
+keeps running the old code. New buttons calling endpoints the server has never
+heard of is exactly what that looks like.
+
+The page now notices: it reads a version from `/healthz` and shows a banner
+when the server is behind. A request the server doesn't recognise says so too,
+instead of failing with a JSON parse error.
+
+With the watcher actually running, a pull that changes `server.py` restarts
+termdeck within a second. Two things it still can't do for you:
 
 - **`ecosystem.config.js` changed** — pm2 doesn't re-read its own config on
   restart. Re-run `./install.sh` (or `pm2 startOrRestart ecosystem.config.js
@@ -146,6 +154,11 @@ They run against a fake iTerm2 layer, so no Mac or running iTerm2 is needed.
 - `static/index.html` — the phone UI: session list (with **+ Tab** /
   **+ Window**) → live terminal view with key row (Esc/Tab/arrows/^C…), Send
   box (appends Enter), font size, wrap, load-earlier, follow-focus.
+
+Windows are listed in the order you'd count them on screen — left to right,
+top to bottom, from each window's actual position — and headed by the title
+the window shows on the Mac, because iTerm2's own ordering is creation order
+and stops matching the desktop the moment anything moves.
 
 Each window's header carries its own **+ Tab**, so which window a tab opens in
 is something you point at rather than something you find out afterwards. It

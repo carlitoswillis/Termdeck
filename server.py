@@ -29,6 +29,10 @@ from aiohttp import web, WSMsgType
 import iterm2
 
 PORT = 7717
+# Bumped whenever the browser needs a server that has caught up. The page
+# checks it and says so, because "pull, but the process is still the old one"
+# is invisible otherwise: static files are read per request, Python isn't.
+VERSION = 13
 TAIL_LINES = 400          # lines of scrollback kept in the live view
 POLL_SECONDS = 0.4        # fallback poll interval, when iTerm2 won't push
 IDLE_SECONDS = 5          # re-read anyway, in case a notification went missing
@@ -155,10 +159,41 @@ async def session_lines(session):
         return 0
 
 
+async def window_order(app):
+    """Windows in the order a person would count them on screen: left to
+    right, top to bottom. iTerm2's own order is creation order, which stops
+    matching the desktop the moment anything is moved."""
+    placed = []
+    for window in app.terminal_windows:
+        try:
+            frame = await window.async_get_frame()
+            # macOS measures y upward from the bottom, so higher y is further
+            # up the screen.
+            key = (round(frame.origin.x), -round(frame.origin.y))
+        except Exception:
+            key = (1 << 30, 0)          # unplaceable: leave it at the end
+        placed.append((key, window))
+    placed.sort(key=lambda pair: pair[0])
+    return [window for _, window in placed]
+
+
+async def window_title(window):
+    """What this window says in its title bar, so it can be told apart from
+    the others at a glance."""
+    try:
+        tab = window.current_tab
+        session = tab.current_session if tab else None
+        if session:
+            return await session_var(session, "autoName") or session.name or ""
+    except Exception:
+        pass
+    return ""
+
+
 async def list_sessions():
     app = await bridge.app(refresh=True)
     windows = []
-    for w, window in enumerate(app.terminal_windows):
+    for w, window in enumerate(await window_order(app)):
         tabs = []
         for t, tab in enumerate(window.tabs):
             sessions = []
@@ -181,7 +216,8 @@ async def list_sessions():
             tabs.append({"index": t, "id": tab.tab_id, "sessions": sessions,
                          "active": tab.tab_id == window.current_tab.tab_id
                          if window.current_tab else False})
-        windows.append({"index": w, "id": window.window_id, "tabs": tabs})
+        windows.append({"index": w, "id": window.window_id, "tabs": tabs,
+                        "title": await window_title(window)})
     return windows
 
 
@@ -640,7 +676,7 @@ async def index(_request):
 
 
 async def healthz(_request):
-    return web.Response(text="ok\n")
+    return web.json_response({"ok": True, "version": VERSION})
 
 
 async def api_sessions(_request):
