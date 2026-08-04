@@ -14,11 +14,14 @@ import errno
 import hashlib
 import hmac
 import ipaddress
+import getpass
 import json
+import os
 import secrets
 import socket
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 from aiohttp import web, WSMsgType
@@ -30,7 +33,8 @@ POLL_SECONDS = 0.4        # fallback poll interval, when iTerm2 won't push
 IDLE_SECONDS = 5          # re-read anyway, in case a notification went missing
 REBIND_SECONDS = 30       # how often to recheck the Tailscale address
 STATIC = Path(__file__).parent / "static"
-TOKEN_FILE = Path(__file__).parent / ".termdeck-token"
+PASSWORD_FILE = Path(__file__).parent / ".termdeck-password"
+SESSION_FILE = Path(__file__).parent / ".termdeck-session"
 COOKIE = "termdeck"
 
 # Two locks, because binding to specific addresses is a property of how it
@@ -363,6 +367,14 @@ async def activate_session(session):
     await app.async_activate(raise_all_windows=False)
 
 
+def log_error(where, exc):
+    """Say what went wrong in the log as well as on the phone. A failure the
+    phone shows as a dead connection is unreadable from the phone."""
+    print(f"{where}: {exc.__class__.__name__}: {exc}", file=sys.stderr, flush=True)
+    traceback.print_exc()
+    sys.stderr.flush()
+
+
 def error_payload(exc):
     msg = str(exc) or exc.__class__.__name__
     hint = ""
@@ -393,48 +405,120 @@ def peer_allowed(remote, nets):
     return any(ip in net for net in nets)
 
 
-def load_token():
-    """Read the shared token, creating one on first run."""
-    if TOKEN_FILE.exists():
-        existing = TOKEN_FILE.read_text().strip()
+def hash_password(password, salt=None):
+    """Salted PBKDF2, so the file on disk isn't the password itself."""
+    salt = salt or secrets.token_hex(8)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(),
+                                 bytes.fromhex(salt), 200_000).hex()
+    return f"{salt}${digest}"
+
+
+def password_matches(password, stored):
+    salt = stored.split("$", 1)[0]
+    try:
+        candidate = hash_password(password, salt)
+    except ValueError:
+        return False
+    return hmac.compare_digest(candidate, stored)
+
+
+class Password:
+    """The password, if there is one. No password set means no login screen —
+    being locked out of the thing you reach your Mac with is its own outage."""
+
+    def __init__(self, plain=None, stored=None):
+        self.plain = plain          # from the environment, compared as-is
+        self.stored = stored        # salted hash from disk
+
+    @classmethod
+    def from_disk(cls):
+        stored = None
+        if PASSWORD_FILE.exists():
+            stored = PASSWORD_FILE.read_text().strip() or None
+        return cls(os.environ.get("TERMDECK_PASSWORD") or None, stored)
+
+    @property
+    def required(self):
+        return bool(self.plain or self.stored)
+
+    def check(self, password):
+        if not password:
+            return False
+        if self.plain and hmac.compare_digest(password, self.plain):
+            return True
+        return bool(self.stored) and password_matches(password, self.stored)
+
+    @staticmethod
+    def save(password):
+        PASSWORD_FILE.write_text(hash_password(password) + "\n")
+        PASSWORD_FILE.chmod(0o600)
+
+
+def session_secret():
+    """The cookie's value: stable across restarts, so a restart doesn't sign
+    every device out. Delete the file to sign them all out at once."""
+    if SESSION_FILE.exists():
+        existing = SESSION_FILE.read_text().strip()
         if existing:
             return existing
-    token = secrets.token_urlsafe(24)
-    TOKEN_FILE.write_text(token + "\n")
-    TOKEN_FILE.chmod(0o600)
-    return token
+    secret = secrets.token_urlsafe(32)
+    SESSION_FILE.write_text(secret + "\n")
+    SESSION_FILE.chmod(0o600)
+    return secret
 
 
-UNAUTHORIZED = """<!doctype html><meta charset=utf-8>
+LOGIN_PAGE = """<!doctype html><meta charset=utf-8>
+<meta name=viewport content="width=device-width, initial-scale=1">
 <title>termdeck</title>
-<body style="font:15px system-ui;background:#101114;color:#d6d7db;padding:2rem">
-<h1 style="font-size:17px">termdeck</h1>
-<p>This link needs the access token. Start termdeck and open the URL it
-prints, or run <code>cat .termdeck-token</code> on the Mac and visit
-<code>/?t=&lt;token&gt;</code>.</p>
+<style>
+ body {{ background:#101114; color:#d6d7db; font:15px/1.5 -apple-system,system-ui,sans-serif;
+        display:flex; min-height:100vh; margin:0; align-items:center; justify-content:center; }}
+ form {{ width:min(320px, 86vw); }}
+ h1 {{ font-size:16px; letter-spacing:.02em; margin:0 0 14px; }}
+ input, button {{ width:100%; font:16px -apple-system,system-ui,sans-serif; padding:11px 12px;
+        border-radius:8px; border:1px solid #26272c; background:#17181c; color:#d6d7db; }}
+ button {{ margin-top:8px; color:#6ea8fe; font-weight:600; }}
+ p {{ color:#ef6a6a; font-size:13px; min-height:18px; margin:8px 0 0; }}
+</style>
+<form method=post action="/login">
+ <h1>termdeck</h1>
+ <input type=password name=password autocomplete=current-password autofocus
+        placeholder=Password>
+ <button type=submit>Unlock</button>
+ <p>{error}</p>
+</form>
 """
 
 
-def make_guard(nets, token):
+def make_guard(nets, password, secret):
+    open_paths = ("/healthz", "/login")
+
     @web.middleware
     async def guard(request, handler):
         if not peer_allowed(request.remote, nets):
             # Deliberately terse: nothing here confirms what's running.
             return web.Response(status=403, text="forbidden\n")
-        if token is None or request.path == "/healthz":
+        if not password.required or request.path in open_paths:
             return await handler(request)
-        supplied = request.query.get("t")
-        if supplied and hmac.compare_digest(supplied, token):
-            # Move it out of the URL so it stops riding along in history,
-            # bookmarks and the address bar. The fragment (#s=…) survives.
-            response = web.HTTPFound(request.path)
-            response.set_cookie(COOKIE, token, httponly=True, samesite="Strict",
-                                max_age=31536000, path="/")
-            raise response
-        if hmac.compare_digest(request.cookies.get(COOKIE, ""), token):
+        if hmac.compare_digest(request.cookies.get(COOKIE, ""), secret):
             return await handler(request)
-        return web.Response(status=401, text=UNAUTHORIZED, content_type="text/html")
+        return web.Response(status=401, text=LOGIN_PAGE.format(error=""),
+                            content_type="text/html")
     return guard
+
+
+def make_login(password, secret):
+    async def login(request):
+        form = await request.post()
+        if not password.check(form.get("password", "")):
+            await asyncio.sleep(1)          # take the fun out of guessing
+            return web.Response(status=401, content_type="text/html",
+                                text=LOGIN_PAGE.format(error="Wrong password."))
+        response = web.HTTPFound("/")
+        response.set_cookie(COOKIE, secret, httponly=True, samesite="Strict",
+                            max_age=31536000, path="/")
+        raise response
+    return login
 
 
 # ---------------------------------------------------------------- HTTP routes
@@ -451,6 +535,7 @@ async def api_sessions(_request):
     try:
         return web.json_response({"windows": await list_sessions()})
     except Exception as exc:
+        log_error("listing sessions", exc)
         bridge.reset()
         return web.json_response(error_payload(exc), status=502)
 
@@ -469,6 +554,7 @@ async def api_new(request):
         title = await session_var(session, "autoName") or session.name or "shell"
         return web.json_response({"session_id": session.session_id, "title": title})
     except Exception as exc:
+        log_error(f"opening a {kind}", exc)
         bridge.reset()
         return web.json_response(error_payload(exc), status=502)
 
@@ -489,6 +575,7 @@ async def api_scrollback(request):
             return web.json_response({"message": "session gone"}, status=404)
         return web.json_response(await read_lines(session, start, count))
     except Exception as exc:
+        log_error("reading scrollback", exc)
         bridge.reset()
         return web.json_response(error_payload(exc), status=502)
 
@@ -509,7 +596,7 @@ async def ws_handler(request):
             pass
 
     async def watch_loop(sid):
-        last_hash = None
+        last_state = None
         while True:
             try:
                 session = await get_session(sid)
@@ -523,15 +610,16 @@ async def ws_handler(request):
                             await send_json({"type": "gone"})
                             return
                         state = await read_lines(session)
-                        digest = hashlib.md5(
-                            json.dumps(state, sort_keys=True).encode()).hexdigest()
-                        if digest != last_hash:
-                            last_hash = digest
+                        # Comparing the payloads directly beats hashing them:
+                        # no serialising a screenful of text twice a frame.
+                        if state != last_state:
+                            last_state = state
                             await send_json({"type": "screen", **state})
                         await wait()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                log_error(f"watching {sid}", exc)
                 bridge.reset()
                 await send_json(error_payload(exc))
                 await asyncio.sleep(2)
@@ -546,6 +634,44 @@ async def ws_handler(request):
                 pass
             watcher = None
 
+    async def needed_session():
+        session = await get_session(session_id)
+        if session is None:
+            await send_json({"type": "gone"})
+        return session
+
+    async def handle(data):
+        nonlocal session_id, watcher
+        kind = data.get("type")
+        if kind == "watch":
+            await stop_watcher()
+            session_id = data.get("session_id")
+            if session_id:
+                watcher = asyncio.create_task(watch_loop(session_id))
+        elif not session_id:
+            return                      # nothing to talk to yet
+        elif kind in ("input", "key"):
+            text = (data.get("text", "") if kind == "input"
+                    else KEYMAP.get(data.get("name", ""), ""))
+            if not isinstance(text, str) or not text:
+                return
+            session = await get_session(session_id)
+            if session:
+                await session.async_send_text(text)
+        elif kind == "resize":
+            session = await needed_session()
+            if session:
+                grid = getattr(session, "grid_size", None)
+                if session_id not in reshaped and grid:
+                    reshaped[session_id] = (grid.width, grid.height)
+                await resize_session(session, data.get("cols", 80),
+                                     data.get("rows", 24))
+        elif kind == "activate":
+            session = await needed_session()
+            if session:
+                await activate_session(session)
+                await send_json({"type": "activated"})
+
     try:
         async for msg in ws:
             if msg.type != WSMsgType.TEXT:
@@ -554,53 +680,19 @@ async def ws_handler(request):
                 data = json.loads(msg.data)
             except ValueError:
                 continue
-            kind = data.get("type")
-            if kind == "watch":
-                await stop_watcher()
-                session_id = data.get("session_id")
-                if not session_id:
-                    continue
-                watcher = asyncio.create_task(watch_loop(session_id))
-            elif kind in ("input", "key") and session_id:
-                text = (data.get("text", "") if kind == "input"
-                        else KEYMAP.get(data.get("name", ""), ""))
-                if not text:
-                    continue
-                try:
-                    session = await get_session(session_id)
-                    if session:
-                        await session.async_send_text(text)
-                except Exception as exc:
-                    bridge.reset()
-                    await send_json(error_payload(exc))
-            elif kind == "resize" and session_id:
-                try:
-                    session = await get_session(session_id)
-                    if session is None:
-                        await send_json({"type": "gone"})
-                        continue
-                    grid = getattr(session, "grid_size", None)
-                    if session_id not in reshaped and grid:
-                        reshaped[session_id] = (grid.width, grid.height)
-                    await resize_session(session, data.get("cols", 80),
-                                         data.get("rows", 24))
-                except Exception as exc:
-                    await send_json(error_payload(exc))
-            elif kind == "activate" and session_id:
-                try:
-                    session = await get_session(session_id)
-                    if session is None:
-                        await send_json({"type": "gone"})
-                        continue
-                    await activate_session(session)
-                    await send_json({"type": "activated"})
-                except Exception as exc:
-                    bridge.reset()
-                    await send_json(error_payload(exc))
+            if not isinstance(data, dict):
+                continue              # a bare JSON value is not a command
+            try:
+                await handle(data)
+            except Exception as exc:
+                # One bad message must never take the socket down with it —
+                # from the phone that is indistinguishable from a crash.
+                log_error("websocket message", exc)
+                await send_json(error_payload(exc))
     finally:
         await stop_watcher()
         # Put the Mac back the way it was, even if the phone just went into a
-        # tunnel — leaving someone's pane 60 columns wide is not on.
+        # tunnel — leaving someone's pane 51 columns wide is not on.
         for sid, (cols, rows) in reshaped.items():
             with contextlib.suppress(Exception):
                 session = await get_session(sid)
@@ -659,10 +751,13 @@ async def rebind_watcher(runner, sites):
             print(f"rebind failed: {exc}", file=sys.stderr, flush=True)
 
 
-def make_app(token=None, allow_lan=False):
-    app = web.Application(middlewares=[make_guard(allowed_networks(allow_lan), token)])
+def make_app(password=None, allow_lan=False, secret="test-secret"):
+    password = password or Password()          # no password: no login screen
+    app = web.Application(middlewares=[
+        make_guard(allowed_networks(allow_lan), password, secret)])
     app.router.add_get("/", index)
     app.router.add_get("/healthz", healthz)
+    app.router.add_post("/login", make_login(password, secret))
     app.router.add_get("/api/sessions", api_sessions)
     app.router.add_get("/api/scrollback", api_scrollback)
     app.router.add_post("/api/new", api_new)
@@ -675,9 +770,13 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="termdeck")
     parser.add_argument("--lan", action="store_true",
                         help="also serve this Mac's Wi-Fi address, not just Tailscale")
+    parser.add_argument("--set-password", action="store_true",
+                        help="set the password and exit; asks for it, stores "
+                             "only a hash")
     parser.add_argument("--no-auth", action="store_true",
-                        help="skip the access token (anyone who can reach the "
-                             "port gets a shell)")
+                        help="ignore any password that has been set")
+    parser.add_argument("--auth", action="store_true",
+                        help=argparse.SUPPRESS)     # kept so old configs run
     return parser.parse_args(argv)
 
 
@@ -696,8 +795,10 @@ def lan_ip():
 
 async def main(argv=None):
     args = parse_args(argv)
-    token = None if args.no_auth else load_token()
-    runner = web.AppRunner(make_app(token, args.lan))
+    password = Password.from_disk()
+    if args.no_auth:
+        password.plain = password.stored = None
+    runner = web.AppRunner(make_app(password, args.lan, session_secret()))
     await runner.setup()
 
     hosts = ["127.0.0.1"]
@@ -727,16 +828,31 @@ async def main(argv=None):
               file=sys.stderr, flush=True)
     reach = "loopback + tailnet" + (" + LAN" if args.lan else "")
     print(f"accepting connections from: {reach}", flush=True)
-    if token:
-        for host in sites:
-            print(f"open: http://{host}:{PORT}/?t={token}", flush=True)
-        print(f"(token also in {TOKEN_FILE.name}; the link only needs it once "
-              "per device)", flush=True)
+    if password.required:
+        print("password required; each device asks once, then remembers",
+              flush=True)
     else:
-        print("warning: --no-auth, so anything that can reach the port gets a "
-              "shell", file=sys.stderr, flush=True)
+        print("no password set — anything that can reach the port gets a "
+              "shell. Set one with: ./.venv/bin/python server.py --set-password",
+              flush=True)
     await rebind_watcher(runner, sites)
 
 
+def set_password_interactively():
+    first = getpass.getpass("New termdeck password: ")
+    if not first:
+        print("nothing entered; password unchanged", file=sys.stderr)
+        return 1
+    if first != getpass.getpass("Again: "):
+        print("they didn't match; password unchanged", file=sys.stderr)
+        return 1
+    Password.save(first)
+    print(f"saved to {PASSWORD_FILE.name}. Restart termdeck to require it: "
+          "pm2 restart termdeck")
+    return 0
+
+
 if __name__ == "__main__":
+    if "--set-password" in sys.argv:
+        sys.exit(set_password_interactively())
     asyncio.run(main())

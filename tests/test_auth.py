@@ -1,67 +1,112 @@
-"""The token and the address allowlist — the two things standing between a
+"""The password and the address allowlist — the two things standing between a
 tailnet and a shell."""
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 import server
 
-TOKEN = "test-token-abc"
+SECRET = "cookie-value-for-tests"
 
 
 @pytest.fixture
-async def secured():
-    """A client that does NOT follow redirects, so we can see the cookie hop."""
-    async with TestClient(TestServer(server.make_app(token=TOKEN))) as client:
+async def locked():
+    """A server with a password set, and a client that doesn't follow
+    redirects so the login hop is visible."""
+    password = server.Password(stored=server.hash_password("hunter2"))
+    async with TestClient(TestServer(
+            server.make_app(password, secret=SECRET))) as client:
         yield client
 
 
-async def test_no_token_is_refused(secured):
+def test_a_password_survives_a_round_trip():
+    stored = server.hash_password("correct horse")
+
+    assert server.password_matches("correct horse", stored)
+    assert not server.password_matches("Correct Horse", stored)
+    assert not server.password_matches("", stored)
+
+
+def test_the_stored_form_is_not_the_password():
+    stored = server.hash_password("hunter2")
+
+    assert "hunter2" not in stored
+    assert stored.count("$") == 1                 # salt$digest
+
+
+def test_the_same_password_stores_differently_each_time():
+    assert server.hash_password("hunter2") != server.hash_password("hunter2")
+
+
+def test_a_corrupt_password_file_just_fails_the_login():
+    assert not server.password_matches("hunter2", "not-a-valid-hash")
+
+
+def test_the_environment_can_supply_it():
+    password = server.Password(plain="from-env")
+
+    assert password.required
+    assert password.check("from-env")
+    assert not password.check("something else")
+
+
+def test_no_password_means_no_login():
+    assert not server.Password().required
+
+
+async def test_locked_pages_show_the_login_form(locked):
     for path in ("/", "/api/sessions", "/static/index.html"):
-        resp = await secured.get(path, allow_redirects=False)
+        resp = await locked.get(path, allow_redirects=False)
         assert resp.status == 401, path
+        assert "type=password" in await resp.text()
 
 
-async def test_wrong_token_is_refused(secured):
-    resp = await secured.get("/", params={"t": "not-it"}, allow_redirects=False)
+async def test_the_wrong_password_is_refused(locked):
+    resp = await locked.post("/login", data={"password": "nope"},
+                             allow_redirects=False)
+
     assert resp.status == 401
+    assert "Wrong password" in await resp.text()
+    assert server.COOKIE not in resp.cookies
 
 
-async def test_a_good_token_becomes_a_cookie(secured):
-    resp = await secured.get("/", params={"t": TOKEN}, allow_redirects=False)
+async def test_the_right_password_sets_a_cookie(locked):
+    resp = await locked.post("/login", data={"password": "hunter2"},
+                             allow_redirects=False)
 
     assert resp.status == 302
-    assert resp.headers["Location"] == "/"        # token dropped from the URL
+    assert resp.headers["Location"] == "/"
     cookie = resp.cookies[server.COOKIE]
-    assert cookie.value == TOKEN
+    assert cookie.value == SECRET
     assert cookie["httponly"]
     assert cookie["samesite"] == "Strict"
 
 
-async def test_the_cookie_then_opens_everything(secured):
-    await secured.get("/", params={"t": TOKEN})   # follow the redirect, keep the cookie
+async def test_the_cookie_then_opens_everything(locked):
+    await locked.post("/login", data={"password": "hunter2"})
 
-    assert (await secured.get("/")).status == 200
-    assert (await secured.get("/api/sessions")).status == 200
-    async with secured.ws_connect("/api/ws") as ws:
+    assert (await locked.get("/")).status == 200
+    assert (await locked.get("/api/sessions")).status == 200
+    async with locked.ws_connect("/api/ws") as ws:
         await ws.send_json({"type": "watch", "session_id": "sess-1"})
         assert (await ws.receive_json())["type"] == "screen"
 
 
-async def test_the_websocket_is_not_a_back_door(secured):
-    """Websockets can't carry an Authorization header, which is exactly why
-    the token lives in a cookie — the handshake has to be refused too."""
+async def test_the_websocket_is_not_a_back_door(locked):
+    """Websockets can't carry an Authorization header, which is why this is a
+    cookie — the handshake has to be refused too."""
     with pytest.raises(Exception):
-        async with secured.ws_connect("/api/ws"):
+        async with locked.ws_connect("/api/ws"):
             pass
 
 
-async def test_healthz_stays_open_for_the_installer(secured):
-    resp = await secured.get("/healthz")
+async def test_healthz_stays_open_for_the_installer(locked):
+    resp = await locked.get("/healthz")
+
     assert resp.status == 200
     assert (await resp.text()).strip() == "ok"
 
 
-async def test_no_token_configured_means_no_auth(client):
+async def test_without_a_password_nothing_is_locked(client):
     assert (await client.get("/")).status == 200
 
 
@@ -96,7 +141,8 @@ def test_lan_opt_in(remote, allowed):
 async def test_a_blocked_address_gets_nothing_useful(monkeypatch):
     """A rejected peer shouldn't learn what's running here."""
     monkeypatch.setattr(server, "peer_allowed", lambda *a: False)
-    async with TestClient(TestServer(server.make_app(token=TOKEN))) as client:
+    async with TestClient(TestServer(server.make_app())) as client:
         resp = await client.get("/")
+
         assert resp.status == 403
         assert "termdeck" not in (await resp.text())

@@ -16,10 +16,11 @@ module.exports = {
     // those files are read from disk per request.
     watch: [path.join(__dirname, "server.py")],
     ignore_watch: ["logs", ".git", ".venv", "tests", "static"],
-    // The server only exits when it can't bind port 7717, so a restart storm
-    // means something else is holding it — stop trying and leave it in the log.
-    max_restarts: 10,
+    // Never stop trying. This is how you reach the machine; pm2 giving up
+    // permanently means the only way back in is a remote desktop session.
+    max_restarts: 10000,
     min_uptime: 10000,
+    exp_backoff_restart_delay: 200,
     out_file: path.join(__dirname, "logs/termdeck.log"),
     error_file: path.join(__dirname, "logs/termdeck.err.log"),
     env: {

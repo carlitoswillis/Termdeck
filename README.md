@@ -60,19 +60,27 @@ proxy in front could all widen that without touching this code.
   or the tailnet (`100.64.0.0/10`). `--lan` adds your Wi-Fi network and also
   binds the Mac's LAN address, for reaching it without Tailscale. Nothing
   binds a public address, ever.
-- **Access token.** Generated on first run into `.termdeck-token` (gitignored,
-  mode 600) and printed as a link at startup. Open that link once per device;
-  it hands the token to a `HttpOnly`, `SameSite=Strict` cookie and drops it
-  from the URL, so it stops riding along in history and bookmarks. Websockets
-  can't send an `Authorization` header, which is exactly why it's a cookie —
-  the handshake is refused without one.
+- **A password**, if you set one:
 
-Only `/healthz` is unauthenticated, so the installer can check the port
-without holding the token. Run with `--no-auth` to turn the token off; then
-anything that can reach the port has a shell.
+  ```
+  ./.venv/bin/python server.py --set-password
+  pm2 restart termdeck
+  ```
 
-Without this, every device on your tailnet could type into your terminal —
-including any node someone else shares in.
+  You get a login page, once per device, and then a `HttpOnly`,
+  `SameSite=Strict` cookie remembers it. Only a salted PBKDF2 hash is stored
+  (`.termdeck-password`, gitignored, mode 600) — never the password itself.
+  Websockets can't send an `Authorization` header, which is why it's a cookie:
+  the handshake is refused without one. `TERMDECK_PASSWORD` in the environment
+  works too, for pm2 configs.
+
+  **No password set means no login screen.** Being locked out of the thing you
+  reach your Mac with is its own kind of outage, so it never appears
+  uninvited — but until you set one, every device on your tailnet can type
+  into your terminal, including any node someone else shares in.
+
+  `--no-auth` ignores a password you've set. Deleting `.termdeck-session`
+  signs every device out at once without changing the password.
 
 ## Surviving sleep
 

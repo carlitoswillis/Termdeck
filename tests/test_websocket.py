@@ -105,6 +105,55 @@ async def test_a_failed_activate_reports_back(client, fake_iterm2):
         assert (await recv(ws, "error"))["message"] == "no such window"
 
 
+async def test_a_bare_json_value_does_not_close_the_socket(client, fake_iterm2):
+    """From the phone, a handler that dies looks exactly like a crash: the
+    connection just goes away with nothing to read."""
+    async with client.ws_connect("/api/ws") as ws:
+        await ws.send_str("[1, 2, 3]")
+        await ws.send_str('"watch"')
+        await ws.send_str("42")
+        await ws.send_str("null")
+
+        await ws.send_json({"type": "watch", "session_id": "sess-1"})
+
+        assert (await recv(ws, "screen"))["lines"]
+
+
+async def test_a_failing_command_leaves_the_socket_usable(client, fake_iterm2):
+    fake_iterm2.session.activate_error = RuntimeError("boom")
+    async with client.ws_connect("/api/ws") as ws:
+        await ws.send_json({"type": "watch", "session_id": "sess-1"})
+        await recv(ws, "screen")
+
+        await ws.send_json({"type": "activate"})
+        assert (await recv(ws, "error"))["message"] == "boom"
+
+        await ws.send_json({"type": "input", "text": "still here\r"})
+        for _ in range(100):
+            if fake_iterm2.session.sent:
+                break
+            await asyncio.sleep(0.01)
+
+    assert fake_iterm2.session.sent == ["still here\r"]
+
+
+async def test_input_that_is_not_text_is_ignored(client, fake_iterm2):
+    async with client.ws_connect("/api/ws") as ws:
+        await ws.send_json({"type": "watch", "session_id": "sess-1"})
+        await recv(ws, "screen")
+
+        await ws.send_json({"type": "input", "text": 12345})
+        await ws.send_json({"type": "input", "text": {"nope": True}})
+        await ws.send_json({"type": "input", "text": "real\r"})
+
+        for _ in range(100):
+            if fake_iterm2.session.sent:
+                break
+            await asyncio.sleep(0.01)
+
+    assert fake_iterm2.session.sent == ["real\r"]
+
+
 def test_keymap_covers_every_key_in_the_ui():
     html = (Path(__file__).resolve().parents[1] / "static" / "index.html").read_text()
     keys = re.search(r"const KEYS = \[(.*?)\];", html, re.S).group(1)
